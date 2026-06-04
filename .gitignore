@@ -214,4 +214,4 @@ data/
 notebooks
 
 # Ignore repomix-output
-*repomix*
+*./repomix*

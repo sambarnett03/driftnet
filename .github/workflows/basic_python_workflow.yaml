@@ -1,0 +1,46 @@
+name: Python package
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip' # ⚡ Useful add: Caches dependencies so your workflow runs much faster
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip setuptools wheel
+        # Explicitly install the tools to guarantee they are available in CI
+        python -m pip install ruff pyright pytest
+        # Install your package and any additional dev dependencies
+        if [ -f pyproject.toml ]; then python -m pip install -e .[dev]; fi
+
+    - name: Check formatting with Ruff
+      run: ruff format --check
+
+    - name: Lint with Ruff
+      run: ruff check
+
+    - name: Type check with Pyright
+      run: pyright
+
+    - name: Test with pytest
+      run: pytest

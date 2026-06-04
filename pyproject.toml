@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "my_package"
+version = "0.1.0"
+description = "A Python package for numerical ocean modeling and analysis"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    {name = "Your Name", email = "your.email@university.edu"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Operating System :: OS Independent",
+]
+
+# 📦 CORE DEPENDENCIES
+# Add libraries your ocean model actually needs to run here.
+# When someone installs your package, pip will automatically install these.
+dependencies = [
+    # "numpy>=1.24.0",
+    # "scipy>=1.10.0",
+    # "xarray>=2023.5.0",
+    # "netcdf4>=1.6.0",
+]
+
+# 🛠️ DEVELOPMENT DEPENDENCIES
+# These are only installed when you run `pip install -e .[dev]`
+# It maps perfectly to your GitHub Actions workflow!
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "pyright",
+    "pytest",
+]
+
+# Tells Python's build system to automatically locate your code in the src/ layout
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# ==============================================================================
+# TOOL CONFIGURATIONS
+# ==============================================================================
+
+[tool.ruff]
+# Generous line length (default is 88) to accommodate long oceanographic equations
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # Pyflakes (unused imports, undefined variables)
+    "UP",  # pyupgrade (upgrades syntax to modern Python)
+    "B",   # flake8-bugbear (finds likely bugs/design issues)
+    "SIM", # flake8-simplify (helps you write cleaner code)
+    "I",   # isort (orders imports alphabetially)
+]
+
+[tool.pyright]
+include = ["src", "analysis", "tests"]
+exclude = ["**/__pycache__", "venv"]
+
+[tool.pytest.ini_options]
+# Tells pytest where to look for your tests automatically
+testpaths = ["tests"]

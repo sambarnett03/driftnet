@@ -61,7 +61,7 @@ select = [
 
 [tool.pyright]
 include = ["src", "scripts", "tests"]
-exclude = ["**/__pycache__", "venv"]
+exclude = ["**/__pycache__", "venv", "**/node_modules", "**/.*"]
 
 [tool.pytest.ini_options]
 # Tells pytest where to look for your tests automatically

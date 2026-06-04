@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11"]
+        python-version: ["3.13"]
 
     steps:
     - name: Checkout Repository
@@ -23,7 +23,7 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
-        cache: 'pip' # ⚡ Useful add: Caches dependencies so your workflow runs much faster
+        cache: 'pip' # Useful add: Caches dependencies so your workflow runs much faster
 
     - name: Install dependencies
       run: |

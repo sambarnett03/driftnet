@@ -214,7 +214,7 @@ data/
 notebooks
 
 # Ignore repomix-output
-repomix-output.md
+repomix*
 
 # Ignore .vscode
 .vscode

@@ -60,7 +60,7 @@ select = [
 ]
 
 [tool.pyright]
-include = ["src", "analysis", "tests"]
+include = ["src", "scripts", "tests"]
 exclude = ["**/__pycache__", "venv"]
 
 [tool.pytest.ini_options]

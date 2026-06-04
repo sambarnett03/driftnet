@@ -218,3 +218,6 @@ repomix*
 
 # Ignore .vscode
 .vscode
+
+# Ignore images
+images/

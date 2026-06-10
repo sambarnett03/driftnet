@@ -1,0 +1,14 @@
+# --- Data Settings ---
+data:
+  # Path to the root data directory (can be absolute or relative to project root)
+  directory: "./data/raw"
+
+# --- Model Hyperparameters ---
+hyperparameters:
+  batch_size: 32
+  learning_rate: 0.001
+
+# --- Run Configuration ---
+run:
+  epochs: 100
+  random_seed: 42

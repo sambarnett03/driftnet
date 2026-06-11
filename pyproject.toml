@@ -21,10 +21,12 @@ classifiers = [
 # Add libraries your ocean model actually needs to run here.
 # When someone installs your package, pip will automatically install these.
 dependencies = [
-    # "numpy>=1.24.0",
-    # "scipy>=1.10.0",
-    # "xarray>=2023.5.0",
-    # "netcdf4>=1.6.0",
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "xarray>=2023.5.0",
+    "netcdf4>=1.6.0",
+    "cartopy",
+    "matplotlib"
 ]
 
 # 🛠️ DEVELOPMENT DEPENDENCIES

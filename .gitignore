@@ -221,3 +221,5 @@ repomix*
 
 # Ignore images
 images/
+
+scripts/scratch.py

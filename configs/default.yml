@@ -1,8 +1,9 @@
 # --- Data Settings ---
 data:
   nc_directory: "/gws/pw/j07/wio/WIOInterannual"
-  original_res_images: "/gws/nopw/j04/oxford_es/sbarnett/images/original_res"
-  degraded_images: "/gws/nopw/j04/oxford_es/sbarnett/images/degraded"
+  original_res_images: "/gws/nopw/j04/oxford_es/sbarnett/driftnet/images/original_res"
+  degraded_images: "/gws/nopw/j04/oxford_es/sbarnett/driftnet/images/degraded"
+  grid_params: "/gws/nopw/j04/oxford_es/sbarnett/driftnet/grid_coordinates.npz"
 
 
 # --- Model Hyperparameters ---

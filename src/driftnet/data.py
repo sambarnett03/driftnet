@@ -3,8 +3,8 @@ import xarray as xr
 import numpy as np
 
 
-def _load_nc_file():
-    pass
+def load_file(fname: Path) -> xr.Dataset:
+    return xr.open_dataset(fname)
 
 
 def nc_file_to_npys():

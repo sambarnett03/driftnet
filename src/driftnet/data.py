@@ -33,9 +33,8 @@ def nc_file_to_npys(fname: Path, save_dir: Path):
 
     # Use a context manager to auto-close the file when finished
     with xr.open_dataset(fname) as ds:
-
         # Loop by index (isel) instead of coordinate value (sel) for speed
-        num_times = ds.sizes['time_counter']
+        num_times = ds.sizes["time_counter"]
 
         for i in range(num_times):
             ds_filtered = ds.isel(time_counter=i)
@@ -44,16 +43,13 @@ def nc_file_to_npys(fname: Path, save_dir: Path):
             # Skip if file already exists
             save_fname = _create_npy_file_name(t)
             if (save_dir / save_fname).exists():
-                print(f'{save_dir / save_fname} already exists')
+                print(f"{save_dir / save_fname} already exists")
                 continue
 
-            print(f"Processing time step {i+1}/{num_times}: {t}")
+            print(f"Processing time step {i + 1}/{num_times}: {t}")
 
             # Stack u_surf and v_surf
             u, v = _extract_u_and_v(ds_filtered)
             vel_field = np.stack((u, v))
 
             np.save(save_dir / save_fname, vel_field)
-
-
-

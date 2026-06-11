@@ -1,6 +1,6 @@
 import argparse
-from pathlib import Path
 import os
+from pathlib import Path
 
 import yaml
 
@@ -22,12 +22,12 @@ def main():
         config = yaml.safe_load(f)
 
     # Extract data dirs
-    nc_dir = Path(config['data']['nc_directory'])
+    nc_dir = Path(config["data"]["nc_directory"])
     original_res_dir = Path(config["data"]["original_res_images"])
 
     # Run script
     for fname in os.listdir(nc_dir):
-        if fname.endswith('.nc') and fname.startswith('WINDS'):
+        if fname.endswith(".nc") and fname.startswith("WINDS"):
             nc_file_to_npys(nc_dir / Path(fname), original_res_dir)
 
 

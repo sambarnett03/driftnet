@@ -1,7 +1,6 @@
 # --- Data Settings ---
 data:
-  # Path to the root data directory (can be absolute or relative to project root)
-  directory: "./data/raw"
+  directory: "/gws/pw/j07/wio/WIOInterannual"
 
 # --- Model Hyperparameters ---
 hyperparameters:

@@ -1,6 +1,9 @@
 # --- Data Settings ---
 data:
-  directory: "/gws/pw/j07/wio/WIOInterannual"
+  nc_directory: "/gws/pw/j07/wio/WIOInterannual"
+  original_res_images: "/gws/nopw/j04/oxford_es/sbarnett/images/original_res"
+  degraded_images: "/gws/nopw/j04/oxford_es/sbarnett/images/degraded"
+
 
 # --- Model Hyperparameters ---
 hyperparameters:

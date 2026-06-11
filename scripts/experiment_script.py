@@ -1,5 +1,6 @@
 import argparse
 from pathlib import Path
+import os
 
 import yaml
 
@@ -21,12 +22,13 @@ def main():
         config = yaml.safe_load(f)
 
     # Extract data dirs
-    # nc_dir = Path(config['data']['nc_directory'])
+    nc_dir = Path(config['data']['nc_directory'])
     original_res_dir = Path(config["data"]["original_res_images"])
 
     # Run script
-    fname = Path("/gws/pw/j07/wio/WIOInterannual/WINDS_SFC_201504.nc")
-    nc_file_to_npys(fname, original_res_dir)
+    for fname in os.listdir(nc_dir):
+        if fname.endswith('.nc') and fname.startswith('WINDS'):
+            nc_file_to_npys(nc_dir / Path(fname), original_res_dir)
 
 
 if __name__ == "__main__":

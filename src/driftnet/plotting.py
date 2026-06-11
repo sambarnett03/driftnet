@@ -7,7 +7,6 @@ import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
-import xarray as xr
 from cartopy.mpl.geoaxes import GeoAxes
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
@@ -185,7 +184,7 @@ def _plot_quiver_component(
 
 
 def plot_velocity_quiver(
-    coord_data: xr.Dataset,
+    coord_data: dict,
     u_input: ArrayLike | None = None,
     v_input: ArrayLike | None = None,
     corners: Corners | None = None,
@@ -201,13 +200,7 @@ def plot_velocity_quiver(
 
     Parameters
     ----------
-    coord_data : xr.Dataset
-        Dataset containing the staggered-grid coordinate fields:
-
-        - ``nav_lon_u``
-        - ``nav_lat_u``
-        - ``nav_lon_v``
-        - ``nav_lat_v``
+    coord_data : dict
 
     u_input, v_input : array-like, optional
         2D velocity components. At least one must be supplied. If only one
@@ -259,10 +252,26 @@ def plot_velocity_quiver(
     fig = plt.figure(figsize=figsize)
     ax = cast(GeoAxes, plt.axes(projection=projection))
 
-    u_lon = coord_data.nav_lon_u.values
-    u_lat = coord_data.nav_lat_u.values
-    v_lon = coord_data.nav_lon_v.values
-    v_lat = coord_data.nav_lat_v.values
+    if u_input is not None:
+        nlat, nlon = np.array(u_input).shape
+
+    else:
+        nlat, nlon = np.array(v_input).shape
+
+    u_lon = coord_data["u_lon"]
+    u_lat = coord_data["u_lat"]
+    v_lon = coord_data["v_lon"]
+    v_lat = coord_data["v_lat"]
+
+    base_lat, base_lon = u_lon.shape
+
+    res_lat = base_lat // nlat
+    res_lon = base_lon // nlon
+
+    u_lon = u_lon[::res_lon, ::res_lon]
+    v_lon = v_lon[::res_lon, ::res_lon]
+    u_lat = u_lat[::res_lat, ::res_lat]
+    v_lat = v_lat[::res_lat, ::res_lat]
 
     extent_lons = []
     extent_lats = []

@@ -1,115 +1,129 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 import xarray as xr
 
-# Import your functions here.
-from driftnet.data import _create_npy_file_name, _extract_u_and_v, nc_file_to_npys
-
-# --- Fixtures ---
+# Import your functions from your script file
+from driftnet.data import _format_dataset_for_zarr, nc_file_to_zarr
 
 
 @pytest.fixture
-def dummy_dataset():
-    """Creates a dummy 3D xarray dataset (time, y, x) for testing."""
-    times = np.array(["2026-06-11T10:00:00", "2026-06-11T11:00:00"], dtype="datetime64[ns]")
-    y = np.arange(5)
-    x = np.arange(5)
+def base_coords() -> dict:
+    """Fixture to provide standardized dimensions for dummy data."""
+    return {"y": np.arange(10), "x": np.arange(20)}
 
-    # Create random 3D data arrays
-    u_data = np.random.rand(len(times), len(y), len(x))
-    v_data = np.random.rand(len(times), len(y), len(x))
 
-    ds = xr.Dataset(
-        data_vars=dict(
-            u_surf=(["time_counter", "y", "x"], u_data),
-            v_surf=(["time_counter", "y", "x"], v_data),
-        ),
-        coords=dict(
-            time_counter=times,
-            y=y,
-            x=x,
-        ),
+def create_dummy_dataset(times: np.ndarray, coords: dict) -> xr.Dataset:
+    """Helper function to quickly manufacture ocean-model-like NetCDF structures."""
+    shape = (len(times), len(coords["y"]), len(coords["x"]))
+
+    u_surf = xr.DataArray(
+        np.ones(shape, dtype="float32"),
+        coords={"time_counter": times, "y": coords["y"], "x": coords["x"]},
+        dims=["time_counter", "y", "x"],
     )
-    return ds
+    v_surf = xr.DataArray(
+        np.zeros(shape, dtype="float32"),
+        coords={"time_counter": times, "y": coords["y"], "x": coords["x"]},
+        dims=["time_counter", "y", "x"],
+    )
+    return xr.Dataset({"u_surf": u_surf, "v_surf": v_surf})
 
 
-# --- Tests for _extract_u_and_v ---
+# =====================================================================
+# Unit Tests for _format_dataset_for_zarr
+# =====================================================================
 
 
-def test_extract_u_and_v_success(dummy_dataset):
-    # Slice the dataset to 2D to simulate what happens inside the loop
-    ds_2d = dummy_dataset.isel(time_counter=0)
+def test_format_dataset_for_zarr_success(base_coords):
+    """Verifies that datasets are formatted, concatenated, and named properly."""
+    times = np.arange(48)
+    ds_input = create_dummy_dataset(times, base_coords)
 
-    u, v = _extract_u_and_v(ds_2d)
+    ds_output = _format_dataset_for_zarr(ds_input)
 
-    assert u.shape == (5, 5)
-    assert v.shape == (5, 5)
-    assert isinstance(u, np.ndarray)
-    assert isinstance(v, np.ndarray)
+    # 1. Ensure it returns a dataset containing the variable 'velocity'
+    assert isinstance(ds_output, xr.Dataset)
+    assert "velocity" in ds_output.data_vars
+
+    # 2. Check that stacking combined the dimensions correctly
+    # Input was (48, 10, 20). Output shape should have a new component dimension of size 2.
+    assert ds_output.velocity.shape == (48, 2, 10, 20)
+    assert list(ds_output.velocity.dims) == ["time_counter", "component", "y", "x"]
+
+    # 3. Check coordinates mapping
+    np.testing.assert_array_equal(ds_output.component.values, ["u", "v"])
 
 
-def test_extract_u_and_v_missing_keys(dummy_dataset):
-    ds_2d = dummy_dataset.isel(time_counter=0)
-    # Drop a required variable
-    ds_missing = ds_2d.drop_vars("u_surf")
+def test_format_dataset_for_zarr_missing_keys():
+    """Verifies that a KeyError is thrown if expected parameters are missing."""
+    invalid_ds = xr.Dataset({"something_else": xr.DataArray([1, 2, 3])})
 
     with pytest.raises(KeyError, match="The variables u_surf or v_surf were not found"):
-        _extract_u_and_v(ds_missing)
+        _format_dataset_for_zarr(invalid_ds)
 
 
-def test_extract_u_and_v_wrong_dimensions(dummy_dataset):
-    # Pass the full 3D dataset without slicing time
-    with pytest.raises(ValueError, match="u or v does not have dimensions 2"):
-        _extract_u_and_v(dummy_dataset)
+# =====================================================================
+# Integration Tests for nc_file_to_zarr
+# =====================================================================
 
 
-# --- Tests for _create_npy_file_name ---
+def test_nc_file_to_zarr_initial_creation(tmp_path: Path, base_coords):
+    """Tests that the function successfully creates a fresh Zarr store with correct chunking."""
+    # Create mock NetCDF file
+    times = np.arange(48)
+    ds_input = create_dummy_dataset(times, base_coords)
+    nc_file = tmp_path / "half_hour_01.nc"
+    ds_input.to_netcdf(nc_file)
+
+    zarr_store = tmp_path / "output.zarr"
+
+    # Run pipeline function
+    nc_file_to_zarr(nc_file, zarr_store)
+
+    # Verify file layout was built
+    assert zarr_store.exists()
+
+    # Open the written Zarr database to check consistency
+    ds_zarr = xr.open_zarr(zarr_store)
+    assert "velocity" in ds_zarr.data_vars
+    assert len(ds_zarr.time_counter) == 48
+
+    # Assert Chunking matches specification exactly
+    # Expected dict: {'component': (2,), 'time_counter': (48,), 'y': (10,), 'x': (20,)}
+    chunks = ds_zarr.velocity.chunksizes
+    assert chunks["time_counter"] == (48,)
+    assert chunks["component"] == (2,)
+    assert chunks["y"] == (10,)  # -1 translates to full dimension length
+    assert chunks["x"] == (20,)  # -1 translates to full dimension length
 
 
-def test_create_npy_file_name():
-    test_time = np.datetime64("2026-06-11T11:15:59")
-    expected_name = "velocities_2026-06-11T11-15-59.npy"
+def test_nc_file_to_zarr_append_functionality(tmp_path: Path, base_coords):
+    """Tests that subsequent calls cleanly append data along the time axis."""
+    zarr_store = tmp_path / "output.zarr"
 
-    result = _create_npy_file_name(test_time)
+    # 1. Process Day 1 (Timestamps 0 to 47)
+    day1_times = np.arange(0, 48)
+    ds_day1 = create_dummy_dataset(day1_times, base_coords)
+    nc_file1 = tmp_path / "day1.nc"
+    ds_day1.to_netcdf(nc_file1)
 
-    assert result == expected_name
+    nc_file_to_zarr(nc_file1, zarr_store)
 
+    # 2. Process Day 2 (Timestamps 48 to 95)
+    day2_times = np.arange(48, 96)
+    ds_day2 = create_dummy_dataset(day2_times, base_coords)
+    nc_file2 = tmp_path / "day2.nc"
+    ds_day2.to_netcdf(nc_file2)
 
-# --- Tests for nc_file_to_npys ---
+    nc_file_to_zarr(nc_file2, zarr_store)
 
+    # 3. Validation
+    ds_zarr = xr.open_zarr(zarr_store)
 
-def test_nc_file_to_npys(dummy_dataset, tmp_path):
-    # tmp_path is a built-in pytest fixture that provides a temporary
-    # directory unique to the test invocation
-    input_nc = tmp_path / "test_input.nc"
-    save_dir = tmp_path / "output_npys"
+    # Time dimension should now be 48 + 48 = 96
+    assert len(ds_zarr.time_counter) == 96
 
-    # Save the dummy dataset to the temporary path
-    dummy_dataset.to_netcdf(input_nc)
-
-    # Run the main function
-    nc_file_to_npys(input_nc, save_dir)
-
-    # Verify the save directory was created
-    assert save_dir.exists()
-
-    # Verify the correct number of files were created (2 time steps = 2 files)
-    saved_files = list(save_dir.glob("*.npy"))
-    assert len(saved_files) == 2
-
-    # Load one of the saved numpy arrays to verify its contents and shape
-    first_time = dummy_dataset.time_counter.values[0]
-    expected_filename = _create_npy_file_name(first_time)
-
-    loaded_array = np.load(save_dir / expected_filename)
-
-    # Shape should be (2 variables, 5 y-coords, 5 x-coords)
-    assert loaded_array.shape == (2, 5, 5)
-
-    # Verify the values match the original dataset
-    np.testing.assert_array_almost_equal(
-        loaded_array[0], dummy_dataset.isel(time_counter=0).u_surf.values
-    )
-    np.testing.assert_array_almost_equal(
-        loaded_array[1], dummy_dataset.isel(time_counter=0).v_surf.values
-    )
+    # Chunking strategy must be intact across chunks: (48, 48)
+    assert ds_zarr.velocity.chunksizes["time_counter"] == (48, 48)

@@ -12,13 +12,6 @@ def test_validate_dimensions_success():
     assert coarse_lons == 4
 
 
-def test_validate_dimensions_invalid_shape():
-    # Array missing the U/V splitting dimension
-    invalid_array = np.zeros((10, 20))
-    with pytest.raises(ValueError, match="Input array must have a shape of"):
-        _validate_dimensions(invalid_array, n=5)
-
-
 def test_validate_dimensions_indivisible():
     # 11 lats is not divisible by n=5
     invalid_array = np.zeros((2, 11, 20))

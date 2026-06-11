@@ -3,7 +3,6 @@ from unittest.mock import patch
 
 import numpy as np
 import pytest
-import xarray as xr
 
 # Adjust this import to match your actual module name
 from driftnet.plotting import (
@@ -24,14 +23,12 @@ def mock_coord_data():
     lon = np.array([[10, 11, 12], [10, 11, 12], [10, 11, 12]], dtype=float)
     lat = np.array([[20, 20, 20], [21, 21, 21], [22, 22, 22]], dtype=float)
 
-    return xr.Dataset(
-        {
-            "nav_lon_u": (("y", "x"), lon),
-            "nav_lat_u": (("y", "x"), lat),
-            "nav_lon_v": (("y", "x"), lon + 0.5),  # Slight offset for v grid
-            "nav_lat_v": (("y", "x"), lat + 0.5),
-        }
-    )
+    return {
+        "u_lon": lon,
+        "u_lat": lat,
+        "v_lon": lon + 0.5,  # Slight offset for v grid
+        "v_lat": lat + 0.5,
+    }
 
 
 # --- Tests for Helper Functions ---

@@ -7,8 +7,8 @@ from numpy.typing import NDArray
 def _extract_u_and_v(
     ds: xr.Dataset,
 ) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
-
-    if 'u_surf' not in list(ds.keys()) or 'v_surf' not in list(ds.keys()):
+    # Direct dictionary lookup is cleaner and faster
+    if 'u_surf' not in ds or 'v_surf' not in ds:
         raise KeyError('The variables u_surf or v_surf were not found')
 
     u = ds.u_surf.values
@@ -21,30 +21,32 @@ def _extract_u_and_v(
 
 
 def _create_npy_file_name(time: np.datetime64) -> str:
-    date_time = str(time)
-    return 'velocities' + date_time + '.npy'
-
-
-def load_file(fname: Path) -> xr.Dataset:
-    if not fname.exists():
-        raise FileNotFoundError(f'File {fname} could not be found ')
-    return xr.open_dataset(fname)
+    # Replace colons to prevent Windows crashing and command-line headaches
+    date_time = str(time).replace(':', '-')
+    return f"velocities_{date_time}.npy"
 
 
 def nc_file_to_npys(fname: Path, save_dir: Path):
-    # Load .nc file
-    ds = load_file(fname)
+    # Ensure the save directory actually exists before writing to it
+    save_dir.mkdir(parents=True, exist_ok=True)
 
-    # Loop through each time counter (1440 total) as too big to load all at once
-    for t in ds.time_counter.values:
-        print(t)
-        ds_filtered = ds.sel({"time_counter": t})
+    # Use a context manager to auto-close the file when finished
+    with xr.open_dataset(fname) as ds:
 
-        # Stack u_surf and v_surf
-        u, v = _extract_u_and_v(ds_filtered)
-        vel_field = np.stack((u, v))
+        # Loop by index (isel) instead of coordinate value (sel) for speed
+        num_times = ds.sizes['time_counter']
 
-        # Save as .npy file to data folder (read from config) - use datetime as filename
-        save_fname = _create_npy_file_name(t)
-        np.save(save_dir / save_fname, vel_field)
+        for i in range(num_times):
+            ds_filtered = ds.isel(time_counter=i)
+            t = ds_filtered.time_counter.values
+            print(f"Processing time step {i+1}/{num_times}: {t}")
+
+            # Stack u_surf and v_surf
+            u, v = _extract_u_and_v(ds_filtered)
+            vel_field = np.stack((u, v))
+
+            # Save file
+            save_fname = _create_npy_file_name(t)
+            np.save(save_dir / save_fname, vel_field)
+
     return

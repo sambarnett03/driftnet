@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from driftnet.data import _degrade_u, _degrade_v, _validate_dimensions
+from driftnet.data import _compute_c_grid_divergence, _degrade_u, _degrade_v, _validate_dimensions
 
 
 def test_validate_dimensions_success():
@@ -58,3 +58,24 @@ def test_degrade_v_math():
 
     assert result.shape == (1, 1)
     assert result[0, 0] == 4.0
+
+
+def test_c_grid_divergence_zero():
+    # Setup a 2x2 grid
+    # Component 0 (U), Component 1 (V)
+    vel = np.zeros((2, 2, 2))
+
+    # Make water enter cell (0,1) from cell (0,0):
+    vel[0, 0, 0] = 1.0  # U_east for cell (0,0) is 1.0 (Water flows from cell 0 to cell 1)
+
+    # To make cell (0,1) divergence-free, the water entering from its West face (1.0)
+    # must leave through its North face (1.0)
+    vel[1, 0, 1] = 1.0  # V_north for cell (0,1) is 1.0
+
+    div = _compute_c_grid_divergence(vel, dx=1.0, dy=1.0)
+
+    # Check cell (0,1):
+    # du/dx = U_east (0.0) - U_west (1.0) = -1.0
+    # dv/dy = V_north (1.0) - V_south (0.0) = +1.0
+    # Total Divergence = -1.0 + 1.0 = 0.0
+    assert div[0, 1] == 0.0

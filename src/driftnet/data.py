@@ -216,3 +216,45 @@ def degrade_zarr_store(input_zarr: Path | str, n: int, output_zarr: Path | str) 
             ds_out_chunked.to_zarr(output_zarr, mode="w")
         else:
             ds_out_chunked.to_zarr(output_zarr, append_dim="time_counter")
+
+
+def _compute_c_grid_divergence(
+    vel_array: np.ndarray, dx: float = 1.0, dy: float = 1.0
+) -> np.ndarray:
+    """
+    Computes the discrete divergence of a 2D velocity field on an Arakawa C-grid.
+
+    Parameters:
+    vel_array: np.ndarray of shape (2, num_lats, num_lons)
+               vel_array[0] is U (defined on Eastern faces)
+               vel_array[1] is V (defined on Northern faces)
+    dx: Grid spacing in the X (longitude) direction (default 1.0)
+    dy: Grid spacing in the Y (latitude) direction (default 1.0)
+
+    Returns:
+    np.ndarray of shape (num_lats, num_lons) representing divergence at cell centers.
+    """
+    if vel_array.ndim != 3 or vel_array.shape[0] != 2:
+        raise ValueError("Input array must have a shape of (2, num_lats, num_lons).")
+
+    u = vel_array[0]
+    v = vel_array[1]
+
+    # --- 1. Zonal Divergence (dU/dx) ---
+    # For cell (y, x), the Eastern face is u[y, x].
+    # The Western face is the Eastern face of the cell to its left: u[y, x-1].
+    u_west = np.zeros_like(u)
+    u_west[:, 1:] = u[:, :-1]  # Shift right to align western faces
+
+    du_dx = (u - u_west) / dx
+
+    # --- 2. Meridional Divergence (dV/dy) ---
+    # For cell (y, x), the Northern face is v[y, x].
+    # The Southern face is the Northern face of the cell below it: v[y-1, x].
+    v_south = np.zeros_like(v)
+    v_south[1:, :] = v[:-1, :]  # Shift down to align southern faces
+
+    dv_dy = (v - v_south) / dy
+
+    # --- 3. Total Divergence ---
+    return du_dx + dv_dy

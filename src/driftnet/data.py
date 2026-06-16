@@ -60,7 +60,7 @@ def _format_dataset_for_zarr(ds: xr.Dataset) -> xr.Dataset:
     vel_field = xr.DataArray(
         data=vel_lazy,
         dims=["time_counter", "component", "y", "x"],
-        coords={"time_counter": ds.time_counter, "component": ["u", "v"]},
+        coords={"time_counter": ds.time_counter, "component": [0, 1]},
         name="velocity",
     )
 
@@ -100,12 +100,9 @@ def preprocess_folder(nc_dir: Path | str, zarr_store: Path | str) -> None:
     # Sort files to ensure time is sequential!
     nc_files = sorted(nc_dir.glob("WINDS*.nc"))
 
-    for i, nc_file in enumerate(nc_files):
+    for nc_file in nc_files:
         print(f"Processing {nc_file.name} to Zarr...")
         nc_file_to_zarr(nc_file, zarr_store)
-        if i == 2:
-            break
-        i += 1
 
 
 # ==========================================
@@ -178,6 +175,7 @@ def degrade_zarr_store(input_zarr: Path | str, n: int, output_zarr: Path | str) 
     # Pre-load the times we have already degraded (if the target store exists)
     existing_times = None
     if output_zarr.exists():
+        print(f"{output_zarr} already exists")
         existing_ds = xr.open_zarr(output_zarr)
         if "time_counter" in existing_ds:
             existing_times = existing_ds.time_counter.values

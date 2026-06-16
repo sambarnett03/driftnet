@@ -1,17 +1,31 @@
-# --- Data Settings ---
+# --- Experiment Settings ---
+experiment:
+  exp_name: ""
+  trial_name: ""
+  base: /gws/nopw/j04/oxford_es/sbarnett/driftnet/experiments
+
+
+# --- Data & Preprocessing ---
 data:
   nc_directory: "/gws/pw/j07/wio/WIOInterannual"
-  original_res_images: "/gws/nopw/j04/oxford_es/sbarnett/driftnet/images/original_res"
-  degraded_images: "/gws/nopw/j04/oxford_es/sbarnett/driftnet/images/degraded"
   grid_params: "/gws/nopw/j04/oxford_es/sbarnett/driftnet/grid_coordinates.npz"
+
+  original_res:
+    dir: "/gws/nopw/j04/oxford_es/sbarnett/driftnet/images/original_res"
+    zarr_name: "mock.zarr"
+
+  degraded_res:
+    dir: "/gws/nopw/j04/oxford_es/sbarnett/driftnet/images/degraded"
+    factor: 2
 
 
 # --- Model Hyperparameters ---
 hyperparameters:
-  batch_size: 32
-  learning_rate: 0.001
+  batch_size: 48
+  micro_batch_size: 24
+  learning_rate: 1e-4
+  epochs: 100
 
 # --- Run Configuration ---
 run:
-  epochs: 100
   random_seed: 42

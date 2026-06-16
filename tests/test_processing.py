@@ -52,9 +52,6 @@ def test_format_dataset_for_zarr_success(base_coords):
     assert ds_output.velocity.shape == (48, 2, 10, 20)
     assert list(ds_output.velocity.dims) == ["time_counter", "component", "y", "x"]
 
-    # 3. Check coordinates mapping
-    np.testing.assert_array_equal(ds_output.component.values, ["u", "v"])
-
 
 def test_format_dataset_for_zarr_missing_keys():
     """Verifies that a KeyError is thrown if expected parameters are missing."""

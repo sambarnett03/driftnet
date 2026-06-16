@@ -2,15 +2,18 @@ import argparse
 import warnings
 from pathlib import Path
 
+from driftnet.ml.utils import print_and_save_config
 import numpy as np
-import xarray as xr
 import yaml
 
-from driftnet.data import degrade_zarr_store, preprocess_folder
-from driftnet.plotting import plot_velocity_quiver
+
+from data.preprocess import preprocess_data
+from ml.training_script import train_downscale
+from driftnet.config import MasterConfig
 
 # --- Suppress Zarr V3 experimental warnings ---
 warnings.filterwarnings("ignore", message=".*FixedLengthUTF32.*")
+warnings.filterwarnings("ignore", message=".*vlen-utf8*")
 warnings.filterwarnings("ignore", message=".*Consolidated metadata is currently not part.*")
 
 
@@ -24,54 +27,23 @@ def main():
     )
     args = parser.parse_args()
 
-    # Load the configuration file
-    with open(args.config) as f:
-        config = yaml.safe_load(f)
 
-    nc_dir = Path(config["data"]["nc_directory"])
-    coord_data = np.load(config["data"]["grid_params"])
+    # Load the configuration (automatically creates experiment folders)
+    config = MasterConfig.load_from_yaml(args.config)
 
-    # We now target .zarr datasets instead of empty directories
-    original_res_zarr = Path(config["data"]["original_res_images"]) / "mock.zarr"
-    degraded_zarr = Path(config["data"]["degraded_images"]) / "mock.zarr"
+    # Make any edits to the config and save
+    # Edits
+    print_and_save_config(config)
 
-    # 1. Take all raw NetCDFs and pack them into a High-Res Zarr store
-    preprocess_folder(nc_dir, original_res_zarr)
-
-    # 2. Plot the high resolution map
-    ds = xr.open_dataset("/gws/nopw/j04/oxford_es/sbarnett/driftnet/images/original_res/mock.zarr")
-    ds_filtered = ds.isel(time_counter=0)
-    vels = ds_filtered.velocity.values
-
-    plot_velocity_quiver(
-        coord_data=coord_data,
-        u_input=vels[0],
-        v_input=vels[1],
-        stride=1,
-        gridline_interval=0.02,
-        corners=[35, 35.1, -20, -19.9],
-        title="u and v velocity component",
-        output_path="images/original_image.png",
+    # Code to run
+    preprocess_data(
+        config.data,
+        plot_graphs=False
     )
 
-    # 3. Open the High-Res Zarr store, degrade it, and save it to a Low-Res Zarr store
-    degrade_zarr_store(original_res_zarr, 2, degraded_zarr)
+    train_downscale(config.hyperparameters, config.data, config.experiment)
 
-    # 4. Check degraded velocity maps
-    ds = xr.open_dataset("/gws/nopw/j04/oxford_es/sbarnett/driftnet/images/degraded/mock_n2.zarr")
-    ds_filtered = ds.isel(time_counter=0)
-    vels = ds_filtered.velocity.values
-
-    plot_velocity_quiver(
-        coord_data=coord_data,
-        u_input=vels[0],
-        v_input=vels[1],
-        stride=1,
-        gridline_interval=0.02,
-        corners=[35, 35.1, -20, -19.9],
-        title="u and v velocity component",
-        output_path="images/degraded_image.png",
-    )
+    print('run some code')
 
 
 if __name__ == "__main__":

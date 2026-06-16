@@ -140,4 +140,6 @@ def train_model(
     model.load_state_dict(best_model["unet"])
     print("Loaded the best synchronized model weights from early stopping.")
 
+    torch.save(best_model, save_dir / 'best_weights.pth')
+
     return model, history

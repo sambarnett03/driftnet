@@ -43,7 +43,6 @@ def main():
 
     train_downscale(config.hyperparameters, config.data, config.experiment)
 
-    print('run some code')
 
 
 if __name__ == "__main__":

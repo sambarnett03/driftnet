@@ -88,3 +88,27 @@ def print_and_save_config(config: MasterConfig):
     console.print(
         f"[green] Configuration saved to {config.experiment.base_path}/run_config.yaml[/green]"
     )
+
+
+def meters_to_degrees(u: float, v: float, lat: float) -> tuple[float, float]:
+    """
+    Converts velocities from meters per second to degrees per second.
+
+    Args:
+        u: Zonal velocity component (m/s)
+        v: Meridional velocity component (m/s)
+        lat: Latitude (degrees)
+
+    Returns:
+        Tuple[float, float]: (dlon/dt, dlat/dt) in degrees per second.
+    """
+
+    EARTH_RADIUS = 6371000.0
+
+    lat_rad = np.radians(lat)
+    # Prevent division by zero at the poles
+    cos_lat = np.cos(lat_rad) if abs(lat) < 89.9 else np.cos(np.radians(89.9))
+
+    dlon_dt = (u / (EARTH_RADIUS * cos_lat)) * (180.0 / np.pi)
+    dlat_dt = (v / EARTH_RADIUS) * (180.0 / np.pi)
+    return dlon_dt, dlat_dt

@@ -4,7 +4,7 @@ import warnings
 from ml.inference_script import inference_over_test_set
 
 from driftnet.config import MasterConfig
-from driftnet.ml.utils import print_and_save_config
+from driftnet.utils import print_and_save_config
 
 # --- Suppress Zarr V3 experimental warnings ---
 warnings.filterwarnings("ignore", message=".*<U1*")

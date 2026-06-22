@@ -7,6 +7,7 @@ import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
+import xarray as xr
 from cartopy.mpl.geoaxes import GeoAxes
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
@@ -414,3 +415,194 @@ def plot_velocity_heatmap(
         ax.set_ylim(extent[2], extent[3])
 
     return mesh
+
+
+# Lagrangian Diagnostic plots
+
+
+def plot_side_by_side_trajectories(
+    ds_gt: xr.Dataset,
+    ds_pred: xr.Dataset,
+    lons_gt: np.ndarray,
+    lats_gt: np.ndarray,
+    lons_pred: np.ndarray,
+    lats_pred: np.ndarray,
+    time_index: int = 0,
+    u_var: str = "u",
+    v_var: str = "v",
+):
+    """
+    Plots GT and Predicted trajectories side-by-side over their respective velocity fields.
+    Assumes lons/lats are 1D arrays of a single particle's history, or 2D arrays (particles, time).
+    """
+    # Calculate velocity magnitude for the background heatmap
+    mag_gt = np.sqrt(
+        ds_gt[u_var].isel(time=time_index) ** 2 + ds_gt[v_var].isel(time=time_index) ** 2
+    )
+
+    mag_pred = np.sqrt(
+        ds_pred[u_var].isel(time=time_index) ** 2 + ds_pred[v_var].isel(time=time_index) ** 2
+    )
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 8), subplot_kw={"projection": ccrs.PlateCarree()})
+
+    # Common plot settings
+    for ax in axes:
+        ax.add_feature(cfeature.LAND, facecolor="lightgray", zorder=2)
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.5, zorder=2)
+        gl = ax.gridlines(draw_labels=True, linestyle="--", alpha=0.5)
+        gl.top_labels = False
+        gl.right_labels = False
+
+    # --- Panel 1: Ground Truth ---
+    ax = axes[0]
+    ax.set_title("Ground Truth: Velocity & Trajectories")
+
+    # Plot background velocity magnitude
+    pcm1 = ax.pcolormesh(
+        ds_gt.lon, ds_gt.lat, mag_gt, transform=ccrs.PlateCarree(), cmap="viridis", shading="auto"
+    )
+
+    # Plot GT trajectory (zorder=3 to render above land if needed, though they shouldn't cross it)
+    if lons_gt.ndim == 1:
+        ax.plot(
+            lons_gt,
+            lats_gt,
+            transform=ccrs.PlateCarree(),
+            color="white",
+            linewidth=2,
+            label="GT Track",
+        )
+
+        ax.scatter(
+            lons_gt[0],
+            lats_gt[0],
+            color="green",
+            marker="o",
+            transform=ccrs.PlateCarree(),
+            label="Start",
+            zorder=4,
+        )
+
+        ax.scatter(
+            lons_gt[-1],
+            lats_gt[-1],
+            color="red",
+            marker="X",
+            transform=ccrs.PlateCarree(),
+            label="End",
+            zorder=4,
+        )
+
+    ax.legend(loc="upper right")
+
+    # --- Panel 2: ML Prediction ---
+    ax = axes[1]
+    ax.set_title("ML Predicted: Velocity & Trajectories")
+
+    # Plot background velocity magnitude
+    ax.pcolormesh(
+        ds_pred.lon,
+        ds_pred.lat,
+        mag_pred,
+        transform=ccrs.PlateCarree(),
+        cmap="viridis",
+        shading="auto",
+    )
+
+    # Plot Pred trajectory
+    if lons_pred.ndim == 1:
+        ax.plot(
+            lons_pred,
+            lats_pred,
+            transform=ccrs.PlateCarree(),
+            color="white",
+            linestyle="--",
+            linewidth=2,
+            label="Pred Track",
+        )
+
+        ax.scatter(
+            lons_pred[0],
+            lats_pred[0],
+            color="green",
+            marker="o",
+            transform=ccrs.PlateCarree(),
+            zorder=4,
+        )
+
+        ax.scatter(
+            lons_pred[-1],
+            lats_pred[-1],
+            color="red",
+            marker="X",
+            transform=ccrs.PlateCarree(),
+            zorder=4,
+        )
+
+    ax.legend(loc="upper right")
+
+    # Add a shared colorbar
+    cbar = fig.colorbar(pcm1, ax=axes, orientation="horizontal", fraction=0.05, pad=0.1)
+    cbar.set_label("Velocity Magnitude (m/s)")
+
+    plt.show()
+
+
+def plot_overlapping_trajectories_on_neutral_map(
+    lons_gt: np.ndarray,
+    lats_gt: np.ndarray,
+    lons_pred: np.ndarray,
+    lats_pred: np.ndarray,
+    extent: list,
+):
+    """
+    Plots both sets of trajectories on a single map without a confusing velocity background.
+    extent: [min_lon, max_lon, min_lat, max_lat]
+    """
+    fig, ax = plt.subplots(figsize=(10, 10), subplot_kw={"projection": ccrs.PlateCarree()})
+    ax = cast(GeoAxes, ax)
+
+    ax.set_extent(extent, crs=ccrs.PlateCarree())
+    ax.add_feature(cfeature.OCEAN, facecolor="azure")
+    ax.add_feature(cfeature.LAND, facecolor="tan", edgecolor="black", zorder=2)
+
+    gl = ax.gridlines(draw_labels=True, linestyle=":", alpha=0.7)
+    gl.top_labels = False
+    gl.right_labels = False
+
+    # Plot Tracks
+    ax.plot(
+        lons_gt,
+        lats_gt,
+        transform=ccrs.PlateCarree(),
+        color="black",
+        linewidth=2.5,
+        label="Ground Truth",
+    )
+    ax.plot(
+        lons_pred,
+        lats_pred,
+        transform=ccrs.PlateCarree(),
+        color="red",
+        linestyle="--",
+        linewidth=2.5,
+        label="ML Predicted",
+    )
+
+    # Mark Start point
+    ax.scatter(
+        lons_gt[0],
+        lats_gt[0],
+        color="green",
+        marker="o",
+        s=100,
+        transform=ccrs.PlateCarree(),
+        label="Start Point",
+        zorder=4,
+    )
+
+    ax.set_title("Trajectory Comparison: GT vs ML Prediction")
+    ax.legend(loc="upper right")
+
+    plt.show()

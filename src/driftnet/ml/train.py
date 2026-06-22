@@ -6,7 +6,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from driftnet.config import ExperimentConfig, HyperparametersConfig
-from driftnet.ml.utils import EarlyStopping, print_gpu_stats
+from driftnet.utils import EarlyStopping, print_gpu_stats
 
 # Enable TF32 math on the A100 Tensor Cores
 torch.backends.cuda.matmul.allow_tf32 = True

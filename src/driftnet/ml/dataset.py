@@ -1,8 +1,10 @@
+from pathlib import Path
+
+import numpy as np
 import torch
 import zarr
-import numpy as np
 from torch.utils.data import Dataset
-from pathlib import Path
+
 
 class OceanDownscaleSet(Dataset):
     def __init__(
@@ -36,15 +38,18 @@ class OceanDownscaleSet(Dataset):
         batch_indices = self.time_indices[start_idx:end_idx]
 
         # Use efficient Zarr slicing if indices are sequential
-        if isinstance(self.time_indices, range) or list(batch_indices) == list(range(batch_indices[0], batch_indices[-1] + 1)):
-            x_np = self.X_low_res[batch_indices[0]:batch_indices[-1] + 1]
-            y_np = self.Y_high_res[batch_indices[0]:batch_indices[-1] + 1]
+        if isinstance(self.time_indices, range) or list(batch_indices) == list(
+            range(batch_indices[0], batch_indices[-1] + 1)
+        ):
+            x_np = self.X_low_res[batch_indices[0] : batch_indices[-1] + 1]
+            y_np = self.Y_high_res[batch_indices[0] : batch_indices[-1] + 1]
         else:
             # Fallback to orthogonal indexing (if you ever shuffle)
             x_np = self.X_low_res[list(batch_indices)]
             y_np = self.Y_high_res[list(batch_indices)]
 
         return torch.from_numpy(x_np).float(), torch.from_numpy(y_np).float()
+
 
 def get_train_val_test_datasets(low_res_path: Path, high_res_path: Path, batch_size: int = 32):
     temp_store = zarr.open_array(str(low_res_path / "velocity"), mode="r")
@@ -58,8 +63,14 @@ def get_train_val_test_datasets(low_res_path: Path, high_res_path: Path, batch_s
     test_indices = range(val_end, total_steps)
 
     # Pass batch size down to the Dataset
-    train_set = OceanDownscaleSet(low_res_path, high_res_path, time_indices=train_indices, batch_size=batch_size)
-    val_set = OceanDownscaleSet(low_res_path, high_res_path, time_indices=val_indices, batch_size=batch_size)
-    test_set = OceanDownscaleSet(low_res_path, high_res_path, time_indices=test_indices, batch_size=batch_size)
+    train_set = OceanDownscaleSet(
+        low_res_path, high_res_path, time_indices=train_indices, batch_size=batch_size
+    )
+    val_set = OceanDownscaleSet(
+        low_res_path, high_res_path, time_indices=val_indices, batch_size=batch_size
+    )
+    test_set = OceanDownscaleSet(
+        low_res_path, high_res_path, time_indices=test_indices, batch_size=batch_size
+    )
 
     return train_set, val_set, test_set

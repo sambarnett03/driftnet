@@ -6,6 +6,34 @@ import xarray as xr
 from numpy.typing import NDArray
 
 # ==========================================
+# General utility functions
+# ==========================================
+
+
+def degrade_coords(arr: NDArray[np.floating], res: int, component: str) -> NDArray[np.floating]:
+    if component not in ["u", "v"]:
+        raise ValueError(f'component must be either "u" or "v", received {component}')
+
+    if component == "u":
+        if arr.shape[1] % res != 0:
+            raise ValueError(
+                f"The coordinates are not divisible by {res} - pad the coordinates first"
+            )
+
+        arr = arr.reshape(-1, arr.shape[1] // res, res)
+        return np.average(arr, res)
+
+    else:
+        if arr.shape[0] % res != 0:
+            raise ValueError(
+                f"The coordinates are not divisible by {res} - pad the coordinates first"
+            )
+
+        arr = arr.reshape(arr.shape[0] // res, -1, res)
+        return np.average(arr, res)
+
+
+# ==========================================
 # Original .npy & Zarr Loading Functions
 # ==========================================
 

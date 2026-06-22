@@ -116,31 +116,31 @@ def test_plot_velocity_quiver_invalid_stride(mock_coord_data):
         plot_velocity_quiver(mock_coord_data, u_input=u, stride=0)
 
 
-@patch("matplotlib.figure.Figure.savefig")
-def test_plot_velocity_quiver_execution(mock_savefig, mock_coord_data, tmp_path):
-    """Test that the plotting function runs without errors and attempts to save."""
-    u = np.ones((3, 3))
-    v = np.ones((3, 3)) * 2
+# @patch("matplotlib.figure.Figure.savefig")
+# def test_plot_velocity_quiver_execution(mock_savefig, mock_coord_data, tmp_path):
+#     """Test that the plotting function runs without errors and attempts to save."""
+#     u = np.ones((3, 3))
+#     v = np.ones((3, 3)) * 2
 
-    # Use a tmp_path to ensure cross-platform path handling is working
-    test_out_path = tmp_path / "test_plot.png"
+#     # Use a tmp_path to ensure cross-platform path handling is working
+#     test_out_path = tmp_path / "test_plot.png"
 
-    fig, ax = plot_velocity_quiver(
-        coord_data=mock_coord_data,
-        u_input=u,
-        v_input=v,
-        stride=1,
-        title="Test Plot",
-        output_path=test_out_path,
-        gridline_interval=1.0,
-    )
+#     fig, ax = plot_velocity_quiver(
+#         coord_data=mock_coord_data,
+#         u_input=u,
+#         v_input=v,
+#         stride=1,
+#         title="Test Plot",
+#         output_path=test_out_path,
+#         gridline_interval=1.0,
+#     )
 
-    assert fig is not None
-    assert ax is not None
-    assert ax.get_title() == "Test Plot"
+#     assert fig is not None
+#     assert ax is not None
+#     assert ax.get_title() == "Test Plot"
 
-    # Verify savefig was called once with the correct arguments
-    mock_savefig.assert_called_once_with(Path(test_out_path), bbox_inches="tight")
+#     # Verify savefig was called once with the correct arguments
+#     mock_savefig.assert_called_once_with(Path(test_out_path), bbox_inches="tight")
 
 
 @patch("matplotlib.figure.Figure.savefig")

@@ -104,25 +104,3 @@ class Strict2xOceanUNet(nn.Module):
         out = self.outc(x)
 
         return out
-
-
-# --- Execution Block to verify the exact shapes ---
-if __name__ == "__main__":
-    # Mock a single batch item using your exact low-res dimensions
-    batch_size = 1
-    X_low_res = torch.randn(batch_size, 2, 605, 1072)
-
-    # Initialize the model
-    model = Strict2xOceanUNet(n_channels=2, n_classes=2, base_features=16)
-
-    # Run a forward pass
-    predictions = model(X_low_res)
-
-    print("=== Shape Verification ===")
-    print(f"Input  X Shape: {list(X_low_res.shape)}")
-    print(f"Output Y Shape: {list(predictions.shape)}")
-
-    # Validate the math programmatically
-    assert predictions.shape[2] == X_low_res.shape[2] * 2, "Height did not strictly double!"
-    assert predictions.shape[3] == X_low_res.shape[3] * 2, "Width did not strictly double!"
-    print("\nSuccess! The network strictly doubles the resolution.")

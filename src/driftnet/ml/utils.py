@@ -1,12 +1,13 @@
 """Early stopping class for training loops"""
 
 from pathlib import Path
+
 import numpy as np
 import torch
 from rich.console import Console
 from rich.syntax import Syntax
-from driftnet.config import MasterConfig
 
+from driftnet.config import MasterConfig
 
 
 class EarlyStopping:
@@ -55,13 +56,13 @@ def print_gpu_stats(batch_idx: int, num_batches: int):
     utilization = torch.cuda.utilization(device)
 
     # Memory currently in use by tensors
-    mem_alloc = torch.cuda.memory_allocated(device) / (1024 ** 3)
+    mem_alloc = torch.cuda.memory_allocated(device) / (1024**3)
 
     # The max memory reached (useful to prevent OOM errors)
-    max_alloc = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
+    max_alloc = torch.cuda.max_memory_allocated(device) / (1024**3)
 
     # Memory reserved by PyTorch's caching allocator
-    mem_reserved = torch.cuda.memory_reserved(device) / (1024 ** 3)
+    mem_reserved = torch.cuda.memory_reserved(device) / (1024**3)
 
     print(
         f"[Batch {batch_idx:04d}/{num_batches}] "
@@ -72,16 +73,18 @@ def print_gpu_stats(batch_idx: int, num_batches: int):
 
 
 def print_and_save_config(config: MasterConfig):
-    console = Console()
+    console = Console(width=200)
 
     yaml_str = config.to_yaml_string()
 
     # 3. Print beautifully to the console/logs
-    syntax = Syntax(yaml_str, "yaml", theme="monokai", line_numbers=False)
+    syntax = Syntax(yaml_str, "yaml", theme="monokai", line_numbers=False, word_wrap=True)
     console.print("\n[bold cyan]=== Current Run Configuration ===[/bold cyan]")
     console.print(syntax)
     console.print("[bold cyan]===================================[/bold cyan]\n")
 
     # 4. Save the exact configuration to the experiment directory
     config.save_to_experiment_dir()
-    console.print(f"[green] Configuration saved to {config.experiment.base_path}/run_config.yaml[/green]")
+    console.print(
+        f"[green] Configuration saved to {config.experiment.base_path}/run_config.yaml[/green]"
+    )

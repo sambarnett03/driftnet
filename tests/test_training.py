@@ -1,13 +1,13 @@
-import pytest
+from unittest.mock import MagicMock, patch
+
 import torch
 import torch.nn as nn
-from unittest.mock import MagicMock, patch
-from pathlib import Path
 from torch.utils.data import DataLoader, TensorDataset
 
-from driftnet.ml.train import train_one_epoch, validate_one_epoch, train_model
+from driftnet.ml.train import train_model, train_one_epoch, validate_one_epoch
 
 # --- Dummy Models and Data for Testing ---
+
 
 class DummyModel(nn.Module):
     def __init__(self):
@@ -33,15 +33,17 @@ def get_dummy_dataloader(chunk_size=4, input_shape=(10,), num_batches=2) -> Data
     # batch_size=chunk_size simulates the large chunks your custom dataset yields
     return DataLoader(dataset, batch_size=chunk_size)
 
+
 # --- Test Cases ---
 
-@patch("torch.autocast") # Patch autocast to prevent errors on CPU-only test runners
+
+@patch("torch.autocast")  # Patch autocast to prevent errors on CPU-only test runners
 def test_train_one_epoch(mock_autocast):
     # Setup
     model = DummyModel()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
     criterion = nn.MSELoss()
-    device = torch.device("cpu") # Force CPU for testing
+    device = torch.device("cpu")  # Force CPU for testing
     dataloader = get_dummy_dataloader(chunk_size=4, input_shape=(10,), num_batches=2)
 
     # Execute
@@ -51,8 +53,8 @@ def test_train_one_epoch(mock_autocast):
         optimizer=optimizer,
         criterion=criterion,
         device=device,
-        micro_batch_size=2, # Exactly half the chunk size to test the micro-batch loop
-        debug=False
+        micro_batch_size=2,  # Exactly half the chunk size to test the micro-batch loop
+        debug=False,
     )
 
     # Assert
@@ -73,17 +75,13 @@ def test_validate_one_epoch(mock_autocast):
 
     # Execute
     loss = validate_one_epoch(
-        model=model,
-        dataloader=dataloader,
-        criterion=criterion,
-        device=device,
-        micro_batch_size=2
+        model=model, dataloader=dataloader, criterion=criterion, device=device, micro_batch_size=2
     )
 
     # Assert
     assert isinstance(loss, float)
     assert loss >= 0.0
-    assert not model.training # Ensure model was put into eval mode
+    assert not model.training  # Ensure model was put into eval mode
 
 
 @patch("driftnet.ml.train.train_one_epoch")
@@ -105,7 +103,10 @@ def test_train_model(mock_early_stopping_cls, mock_validate, mock_train, tmp_pat
     hyper_config.learning_rate = 1e-3
 
     exp_config = MagicMock()
-    exp_config.base_path = tmp_path # Use pytest's tmp_path for safe file writing
+    exp_config.base_path = tmp_path  # Use pytest's tmp_path for safe file writing
+
+    # FIX: Define the model_weights path explicitly so parent directory checks pass
+    exp_config.model_weights = tmp_path / "model_weights.pt"
 
     # Configure mock returns
     mock_train.return_value = 0.5
@@ -126,11 +127,11 @@ def test_train_model(mock_early_stopping_cls, mock_validate, mock_train, tmp_pat
             train_loader=train_loader,
             val_loader=val_loader,
             criterion=criterion,
-            device=device
+            device=device,
         )
 
     # Assert
-    assert mock_train.call_count == 2 # Called for 2 epochs
+    assert mock_train.call_count == 2  # Called for 2 epochs
     assert mock_validate.call_count == 2
     assert "train_loss" in history
     assert "val_loss" in history

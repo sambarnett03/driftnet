@@ -1,10 +1,9 @@
-from dataclasses import dataclass, field, asdict
+import os
+from dataclasses import asdict, dataclass
 from pathlib import Path
+
 import yaml
-import os
-import os
-from dataclasses import dataclass
-from pathlib import Path
+
 
 @dataclass
 class ExperimentConfig:
@@ -29,11 +28,15 @@ class ExperimentConfig:
 
         # 4. Create the necessary directories
         os.makedirs(self.base_path, exist_ok=True)
-        os.makedirs(self.base_path / 'model_data', exist_ok=True)
-        os.makedirs(self.base_path / 'predictions', exist_ok=True)
+        os.makedirs(self.base_path / "model_data", exist_ok=True)
+        os.makedirs(self.base_path / "predictions", exist_ok=True)
+
+        self.model_weights = self.base_path / "model_data" / "best_weights.pth"
+        self.model_predictions = self.base_path / "predictions.zarr"
 
     def __getitem__(self, key):
         return getattr(self, key)
+
 
 @dataclass
 class OriginalResConfig:
@@ -47,6 +50,7 @@ class OriginalResConfig:
 
     def __getitem__(self, key):
         return getattr(self, key)
+
 
 @dataclass
 class DegradedResConfig:
@@ -62,6 +66,7 @@ class DegradedResConfig:
     def __getitem__(self, key):
         return getattr(self, key)
 
+
 @dataclass
 class DataConfig:
     # These contain our nested dataclasses
@@ -71,7 +76,6 @@ class DataConfig:
     nc_directory: str = ""
     grid_params: str = ""
     unet_data: str = ""
-
 
     def __post_init__(self):
         # Convert base strings to Paths
@@ -93,6 +97,7 @@ class DataConfig:
     def __getitem__(self, key):
         return getattr(self, key)
 
+
 @dataclass
 class HyperparametersConfig:
     batch_size: int = 48
@@ -103,12 +108,14 @@ class HyperparametersConfig:
     def __getitem__(self, key):
         return getattr(self, key)
 
+
 @dataclass
 class RunConfig:
     random_seed: int = 42
 
     def __getitem__(self, key):
         return getattr(self, key)
+
 
 @dataclass
 class MasterConfig:
@@ -119,14 +126,14 @@ class MasterConfig:
 
     @classmethod
     def load_from_yaml(cls, yaml_path: str) -> "MasterConfig":
-        with open(yaml_path, "r") as f:
+        with open(yaml_path) as f:
             raw_dict = yaml.safe_load(f) or {}
 
         return cls(
             experiment=ExperimentConfig(**raw_dict.get("experiment", {})),
             data=DataConfig(**raw_dict.get("data", {})),
             hyperparameters=HyperparametersConfig(**raw_dict.get("hyperparameters", {})),
-            run=RunConfig(**raw_dict.get("run", {}))
+            run=RunConfig(**raw_dict.get("run", {})),
         )
 
     def __getitem__(self, key):
@@ -134,7 +141,6 @@ class MasterConfig:
 
     def to_dict(self):
         """Converts the dataclasses to a dict, safely casting Path objects to strings."""
-        from dataclasses import asdict
         from pathlib import Path
 
         raw_dict = asdict(self)
@@ -143,7 +149,7 @@ class MasterConfig:
             if isinstance(d, dict):
                 return {k: make_serializable(v) for k, v in d.items()}
             elif isinstance(d, Path):
-                return str(d) # Convert paths to clean strings
+                return str(d)  # Convert paths to clean strings
             return d
 
         return make_serializable(raw_dict)

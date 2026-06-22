@@ -1,17 +1,13 @@
 import argparse
 import warnings
-from pathlib import Path
 
-from driftnet.ml.utils import print_and_save_config
-import numpy as np
-import yaml
+from ml.inference_script import inference_over_test_set
 
-
-from data.preprocess import preprocess_data
-from ml.training_script import train_downscale
 from driftnet.config import MasterConfig
+from driftnet.ml.utils import print_and_save_config
 
 # --- Suppress Zarr V3 experimental warnings ---
+warnings.filterwarnings("ignore", message=".*<U1*")
 warnings.filterwarnings("ignore", message=".*FixedLengthUTF32.*")
 warnings.filterwarnings("ignore", message=".*vlen-utf8*")
 warnings.filterwarnings("ignore", message=".*Consolidated metadata is currently not part.*")
@@ -27,7 +23,6 @@ def main():
     )
     args = parser.parse_args()
 
-
     # Load the configuration (automatically creates experiment folders)
     config = MasterConfig.load_from_yaml(args.config)
 
@@ -36,13 +31,11 @@ def main():
     print_and_save_config(config)
 
     # Code to run
-    preprocess_data(
-        config.data,
-        plot_graphs=False
-    )
+    # preprocess_data(config.data, plot_graphs=False)
 
-    train_downscale(config.hyperparameters, config.data, config.experiment)
+    # train_downscale(config.hyperparameters, config.data, config.experiment)
 
+    inference_over_test_set(config.data, config.experiment)
 
 
 if __name__ == "__main__":

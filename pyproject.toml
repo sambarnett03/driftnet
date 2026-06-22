@@ -17,7 +17,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
-# 📦 CORE DEPENDENCIES
+# CORE DEPENDENCIES
 # Add libraries your ocean model actually needs to run here.
 # When someone installs your package, pip will automatically install these.
 dependencies = [
@@ -28,7 +28,9 @@ dependencies = [
     "cartopy",
     "matplotlib",
     "zarr",
-    "dask"
+    "dask",
+    "torch",
+    "rich"
 ]
 
 # 🛠️ DEVELOPMENT DEPENDENCIES

@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -10,6 +10,7 @@ import numpy as np
 import xarray as xr
 from cartopy.mpl.geoaxes import GeoAxes
 from matplotlib.axes import Axes
+from matplotlib.collections import QuadMesh
 from matplotlib.figure import Figure
 from matplotlib.quiver import Quiver
 from numpy.typing import ArrayLike, NDArray
@@ -22,10 +23,13 @@ CornerPoint = tuple[float, float]
 CornerPoints = Sequence[CornerPoint]
 Corners = BoundsLike | CornerPoints
 
-def _parse_corners(corners: Corners | None) -> Bounds | None:
+def _parse_corners(corners: Corners | None | str) -> Bounds | None | str:
     """Return lon/lat bounds from either bounds or four corner points."""
     if corners is None:
         return None
+
+    if corners == 'auto':
+        return 'auto'
 
     corners_array = np.asarray(corners, dtype=float)
 
@@ -44,30 +48,30 @@ def _parse_corners(corners: Corners | None) -> Bounds | None:
         )
 
     raise ValueError(
-        "corners must be either "
+        "corners must be either 'auto', None, "
         "(lon_min, lon_max, lat_min, lat_max) or "
         "[(lon1, lat1), ..., (lon4, lat4)]."
     )
 
-
 def _get_extent(
     lon: NDArray[np.floating],
     lat: NDArray[np.floating],
-    corners: Corners | None = None,
-    padding: float = 2,
-) -> Bounds:
-    """Return plot extent, using corners if supplied."""
+    corners: Corners | None | str = None,
+    padding: float = 2.0,
+) -> Bounds | None:
+    """Return plot extent, using corners if supplied. Returns None for full map."""
     corner_bounds = _parse_corners(corners)
 
-    if corner_bounds is not None:
-        return corner_bounds
+    if corner_bounds == 'auto':
+        return (
+            float(np.nanmin(lon) - padding),
+            float(np.nanmax(lon) + padding),
+            float(np.nanmin(lat) - padding),
+            float(np.nanmax(lat) + padding),
+        )
 
-    return (
-        float(np.nanmin(lon) - padding),
-        float(np.nanmax(lon) + padding),
-        float(np.nanmin(lat) - padding),
-        float(np.nanmax(lat) + padding),
-    )
+    # This will return either the explicit bounds tuple, or None
+    return cast(Bounds | None, corner_bounds)
 
 
 def _clip_to_extent(
@@ -75,7 +79,7 @@ def _clip_to_extent(
     lat: NDArray[np.floating],
     u: NDArray[np.floating],
     v: NDArray[np.floating],
-    extent: Bounds,
+    extent: Bounds | None,
 ) -> tuple[
     NDArray[np.floating],
     NDArray[np.floating],
@@ -83,6 +87,9 @@ def _clip_to_extent(
     NDArray[np.floating],
 ]:
     """Clip coordinates and velocity components to the given extent."""
+    if extent is None:
+        return lon, lat, u, v
+
     lon_min, lon_max, lat_min, lat_max = extent
 
     mask = (lon >= lon_min) & (lon <= lon_max) & (lat >= lat_min) & (lat <= lat_max)
@@ -161,13 +168,13 @@ def _get_gridline_values(
 
 def _add_gridlines(
     ax: GeoAxes,
-    extent: Bounds,
+    extent: Bounds | None,
     gridline_interval: float | None,
 ) -> None:
     """Add labelled gridlines, optionally at a fixed degree interval."""
     gridlines = ax.gridlines(draw_labels=True)
 
-    if gridline_interval is None:
+    if gridline_interval is None or extent is None:
         return
 
     if gridline_interval <= 0:
@@ -189,7 +196,7 @@ def _plot_quiver_component(
     lat: NDArray[np.floating],
     u: NDArray[np.floating],
     v: NDArray[np.floating],
-    extent: Bounds,
+    extent: Bounds | None,
     stride: int,
     scale: float | None,
 ) -> Quiver:
@@ -214,10 +221,10 @@ def _plot_quiver_component(
 
 
 def plot_velocity_quiver(
-    coord_data: dict,
+    coord_data: dict[str, Any],
     u_input: ArrayLike | None = None,
     v_input: ArrayLike | None = None,
-    corners: Corners | None = None,
+    corners: Corners | None | str = None,
     stride: int = 10,
     title: str = "Surface velocity",
     scale: float | None = None,
@@ -288,7 +295,9 @@ def plot_velocity_quiver(
     lat_for_extent = np.concatenate([lat.ravel() for lat in extent_lats])
     extent = _get_extent(lon_for_extent, lat_for_extent, corners=corners)
 
-    ax.set_extent(extent, crs=projection)
+    if extent is not None:
+        ax.set_extent(extent, crs=projection)
+
     _add_map_features(ax)
 
     if u_input is not None:
@@ -337,7 +346,11 @@ def plot_velocity_quiver(
     return fig, ax
 
 
-def plot_cgrid_subset(coord_data, i_range=(0, 10), j_range=(0, 10)):
+def plot_cgrid_subset(
+    coord_data: dict[str, Any],
+    i_range: tuple[int, int] = (0, 10),
+    j_range: tuple[int, int] = (0, 10)
+) -> None:
     """
     Plots a subset of the C-grid data.
     i_range and j_range define the slice to visualize.
@@ -369,8 +382,16 @@ def plot_cgrid_subset(coord_data, i_range=(0, 10), j_range=(0, 10)):
 
 
 def plot_velocity_heatmap(
-    ax, lon, lat, vel, add_map_features=True, cmap="RdBu_r", vmin=None, vmax=None, corners=None
-):
+    ax: GeoAxes | Axes,
+    lon: NDArray[np.floating],
+    lat: NDArray[np.floating],
+    vel: NDArray[np.floating],
+    add_map_features: bool = True,
+    cmap: str = "RdBu_r",
+    vmin: float | None = None,
+    vmax: float | None = None,
+    corners: Corners | None | str = None,
+) -> QuadMesh:
     """
     Plots a heatmap for velocity data on a given axis, optionally adding a zoomed-in Cartopy map.
 
@@ -389,7 +410,7 @@ def plot_velocity_heatmap(
     """
 
     if corners is None:
-        corners = [40, 42.5, -20, -17.5]
+        corners = [40.0, 42.5, -20.0, -17.5]
 
     # Resolution matching
     nlat, nlon = vel.shape
@@ -398,22 +419,25 @@ def plot_velocity_heatmap(
     res_lat = base_lat // nlat
     res_lon = base_lon // nlon
 
-    lon = lon[::res_lon, ::res_lon]
-    lat = lat[::res_lat, ::res_lat]
+    lon = _block_average_2d(lon, res_lat, res_lon)
+    lat = _block_average_2d(lat, res_lat, res_lon)
 
     # Calculate extent using the corners argument or data bounds
-    # (Assuming _get_extent is available in this module's scope, just like in quiver)
     extent = _get_extent(lon.ravel(), lat.ravel(), corners=corners)
 
     if add_map_features:
+        # Cast to GeoAxes so Pylance knows Cartopy methods are available
+        geo_ax = cast(GeoAxes, ax)
+
         # Add geographical features
-        ax.add_feature(cfeature.COASTLINE, linewidth=0.8, zorder=2)
+        geo_ax.add_feature(cfeature.COASTLINE, linewidth=0.8, zorder=2)
 
         # Zoom to the calculated extent based on corners/data
-        ax.set_extent(extent, crs=ccrs.PlateCarree())
+        if extent is not None:
+            geo_ax.set_extent(extent, crs=ccrs.PlateCarree())
 
         # Plot the data using PlateCarree projection so Cartopy knows how to map it
-        mesh = ax.pcolormesh(
+        mesh = geo_ax.pcolormesh(
             lon,
             lat,
             vel,
@@ -426,7 +450,7 @@ def plot_velocity_heatmap(
         )
 
         # Optional: Add gridlines
-        gl = ax.gridlines(draw_labels=True, linewidth=0.5, color="gray", alpha=0.5, linestyle="--")
+        gl = geo_ax.gridlines(draw_labels=True, linewidth=0.5, color="gray", alpha=0.5, linestyle="--")
         gl.top_labels = False
         gl.right_labels = False
     else:
@@ -434,24 +458,26 @@ def plot_velocity_heatmap(
         mesh = ax.pcolormesh(lon, lat, vel, cmap=cmap, shading="auto", vmin=vmin, vmax=vmax)
 
         # Apply the extent to standard x/y limits: [lon_min, lon_max, lat_min, lat_max]
-        ax.set_xlim(extent[0], extent[1])
-        ax.set_ylim(extent[2], extent[3])
+        if extent is not None:
+            ax.set_xlim(extent[0], extent[1])
+            ax.set_ylim(extent[2], extent[3])
 
     return mesh
-
 
 
 def plot_side_by_side_trajectories(
     ds_gt: xr.Dataset,
     ds_pred: xr.Dataset,
-    grid_coords_path: Path,
-    lons_gt: np.ndarray,
-    lats_gt: np.ndarray,
-    lons_pred: np.ndarray,
-    lats_pred: np.ndarray,
+    grid_coords_path: Path | str,
+    lons_gt: NDArray[np.floating],
+    lats_gt: NDArray[np.floating],
+    lons_pred: NDArray[np.floating],
+    lats_pred: NDArray[np.floating],
     time_index: int = 0,
-    corners=None, # <--- NEW optional argument added
-):
+    corners: Corners | None | str = None,
+    padding: float = 2.0,
+    save_name: str = 'test.png'
+) -> None:
     """
     Plots GT and Predicted trajectories side-by-side over their respective velocity fields.
     Assumes lons/lats are 1D arrays of a single particle's history, or 2D arrays (particles, time_counter).
@@ -490,16 +516,19 @@ def plot_side_by_side_trajectories(
     lat_pred = _block_average_2d(base_lat, res_lat_pred, res_lon_pred)
 
     # --- CALCULATE EXTENT FOR ZOOM ---
-    # Calculates a bounding box padded by 2 degrees around the GT trajectory,
-    # or uses explicit corners if provided.
-    extent = _get_extent(lons_gt, lats_gt, corners=corners, padding=2)
+    extent = _get_extent(lons_gt, lats_gt, corners=corners, padding=padding)
 
-    fig, axes = plt.subplots(1, 2, figsize=(16, 8), subplot_kw={"projection": ccrs.PlateCarree()})
+    fig, axes_raw = plt.subplots(1, 2, figsize=(16, 8), subplot_kw={"projection": ccrs.PlateCarree()})
+
+    # Cast the axes array elements to GeoAxes for Pylance
+    axes = [cast(GeoAxes, ax) for ax in axes_raw]
 
     # Common plot settings
     for ax in axes:
-        # Apply the zoom extent directly to the cartopy axes
-        ax.set_extent(extent, crs=ccrs.PlateCarree())
+        # Only apply specific extent if one was provided or calculated
+        # Otherwise, Cartopy auto-fits to the global velocity map
+        if extent is not None:
+            ax.set_extent(extent, crs=ccrs.PlateCarree())
 
         ax.add_feature(cfeature.LAND, facecolor="lightgray", zorder=2)
         ax.add_feature(cfeature.COASTLINE, linewidth=0.5, zorder=2)
@@ -508,11 +537,11 @@ def plot_side_by_side_trajectories(
         gl.right_labels = False
 
     # --- Panel 1: Ground Truth ---
-    ax = axes[0]
-    ax.set_title("Ground Truth: Velocity & Trajectories")
+    ax0 = axes[0]
+    ax0.set_title("Ground Truth: Velocity & Trajectories")
 
     # Plot background velocity magnitude using downsampled GT coordinates
-    pcm1 = ax.pcolormesh(
+    pcm1 = ax0.pcolormesh(
         lon_gt,
         lat_gt,
         mag_gt,
@@ -523,27 +552,27 @@ def plot_side_by_side_trajectories(
 
     # Plot GT trajectory
     if lons_gt.ndim == 1:
-        ax.plot(
+        ax0.plot(
             lons_gt, lats_gt,
             transform=ccrs.PlateCarree(),
             color="white", linewidth=2, label="GT Track", zorder=3
         )
-        ax.scatter(
+        ax0.scatter(
             lons_gt[0], lats_gt[0],
             color="green", marker="o", transform=ccrs.PlateCarree(), label="Start", zorder=4,
         )
-        ax.scatter(
+        ax0.scatter(
             lons_gt[-1], lats_gt[-1],
             color="red", marker="X", transform=ccrs.PlateCarree(), label="End", zorder=4,
         )
-    ax.legend(loc="upper right")
+    ax0.legend(loc="upper right")
 
     # --- Panel 2: ML Prediction ---
-    ax = axes[1]
-    ax.set_title("ML Predicted: Velocity & Trajectories")
+    ax1 = axes[1]
+    ax1.set_title("ML Predicted: Velocity & Trajectories")
 
     # Plot background velocity magnitude using downsampled Pred coordinates
-    ax.pcolormesh(
+    ax1.pcolormesh(
         lon_pred,
         lat_pred,
         mag_pred,
@@ -554,46 +583,45 @@ def plot_side_by_side_trajectories(
 
     # Plot Pred trajectory
     if lons_pred.ndim == 1:
-        ax.plot(
+        ax1.plot(
             lons_pred, lats_pred,
             transform=ccrs.PlateCarree(),
-            color="white", linestyle="--", linewidth=2, label="Pred Track", zorder=3
+            color="white", linewidth=2, label="Pred Track", zorder=3
         )
-        ax.scatter(
+        ax1.scatter(
             lons_pred[0], lats_pred[0],
             color="green", marker="o", transform=ccrs.PlateCarree(), zorder=4,
         )
-        ax.scatter(
+        ax1.scatter(
             lons_pred[-1], lats_pred[-1],
             color="red", marker="X", transform=ccrs.PlateCarree(), zorder=4,
         )
-    ax.legend(loc="upper right")
+    ax1.legend(loc="upper right")
 
-    # Add a shared colorbar
-    cbar = fig.colorbar(pcm1, ax=axes, orientation="horizontal", fraction=0.05, pad=0.1)
+    # Add a shared colorbar (matplotlib needs the raw axes array)
+    cbar = fig.colorbar(pcm1, ax=axes_raw, orientation="horizontal", fraction=0.05, pad=0.1)
     cbar.set_label("Velocity Magnitude (m/s)")
 
     # Create output directory if it doesn't exist
     output_dir = Path('images')
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    plt.savefig(output_dir / 'test.png', bbox_inches="tight")
+    plt.savefig(output_dir / save_name, bbox_inches="tight")
     plt.close(fig)
 
-
 def plot_overlapping_trajectories_on_neutral_map(
-    lons_gt: np.ndarray,
-    lats_gt: np.ndarray,
-    lons_pred: np.ndarray,
-    lats_pred: np.ndarray,
-    extent: list,
-):
+    lons_gt: NDArray[np.floating],
+    lats_gt: NDArray[np.floating],
+    lons_pred: NDArray[np.floating],
+    lats_pred: NDArray[np.floating],
+    extent: Bounds,
+) -> None:
     """
     Plots both sets of trajectories on a single map without a confusing velocity background.
     extent: [min_lon, max_lon, min_lat, max_lat]
     """
-    fig, ax = plt.subplots(figsize=(10, 10), subplot_kw={"projection": ccrs.PlateCarree()})
-    ax = cast(GeoAxes, ax)
+    fig, ax_raw = plt.subplots(figsize=(10, 10), subplot_kw={"projection": ccrs.PlateCarree()})
+    ax = cast(GeoAxes, ax_raw)
 
     ax.set_extent(extent, crs=ccrs.PlateCarree())
     ax.add_feature(cfeature.OCEAN, facecolor="azure")

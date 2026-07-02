@@ -20,7 +20,7 @@ def run_lagrangian_diagnostics(config_data: DataConfig, config_pred: ExperimentC
         config_data.grid_params_path,
         seed_particles=[(-15, 60)],
         start_time=np.datetime64("1995-09-09T18:00:00"),
-        baseline_duration_hours=48,
+        baseline_duration_hours=1200,
         safety_margin_hours=4.0,
     )
 
@@ -64,5 +64,8 @@ def plot_trajectories(config_data: DataConfig, config_pred: ExperimentConfig):
         lats_gt=paths[0]["lats_gt"],
         lons_pred=paths[0]["lons_pred"],
         lats_pred=paths[0]["lats_pred"],
+        corners='auto',
+        padding=0.5
     )
     print("Done!")
+

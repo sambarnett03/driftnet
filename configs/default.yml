@@ -2,20 +2,20 @@
 experiment:
   exp_name: ""
   trial_name: ""
-  base: /gws/nopw/j04/oxford_es/sbarnett/driftnet/experiments
+  base: /gws/ssde/j25b/oxford_es/sbarnett/driftnet/experiments
 
 
 # --- Data & Preprocessing ---
 data:
   nc_directory: "/gws/pw/j07/wio/WIOInterannual"
-  grid_params: "/gws/nopw/j04/oxford_es/sbarnett/driftnet/grid_coordinates.npz"
+  grid_params: "/gws/ssde/j25b/oxford_es/sbarnett/driftnet/grid_coordinates.npz"
 
   original_res:
-    dir: "/gws/nopw/j04/oxford_es/sbarnett/driftnet/images/original_res"
+    dir: "/gws/ssde/j25b/oxford_es/sbarnett/driftnet/images/original_res"
     zarr_name: "mock.zarr"
 
   degraded_res:
-    dir: "/gws/nopw/j04/oxford_es/sbarnett/driftnet/images/degraded"
+    dir: "/gws/ssde/j25b/oxford_es/sbarnett/driftnet/images/degraded"
     factor: 2
 
 

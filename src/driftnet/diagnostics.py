@@ -1,11 +1,11 @@
+from pathlib import Path
 import numpy as np
 import pandas as pd
+from scipy.spatial import KDTree
+
 import xarray as xr
 
 from driftnet.utils import meters_to_degrees
-
-# Re-using the meters_to_degrees and rk4_step logic from earlier...
-
 
 def generate_target_bbox(
     lat: float, lon: float, lat_degree_radius: float = 0.05, lon_degree_radius: float = 0.05
@@ -22,36 +22,60 @@ def generate_target_bbox(
 
 
 def get_velocity_at_point(
-    ds: xr.Dataset, time: np.datetime64, lat: float, lon: float, u_var: str = "u", v_var: str = "v"
+    ds: xr.Dataset,
+    time: np.datetime64,
+    lat: float,
+    lon: float,
+    tree_u: KDTree,
+    shape_u: tuple[int, ...],
+    tree_v: KDTree,
+    shape_v: tuple[int, ...]
 ) -> tuple[float, float]:
     """
-    Interpolates the velocity field at a specific continuous space-time point.
+    Finds nearest spatial indices on a curvilinear C-grid and interpolates in time.
     Assumes land points have 0 velocity.
-
-    Args:
-        ds: xarray Dataset containing the Zarr velocity fields.
-        time: Target timestamp.
-        lat: Target latitude coordinate.
-        lon: Target longitude coordinate.
     """
-    try:
-        # Use bilinear interpolation in space and nearest/linear in time
-        point = ds.interp(time=time, lat=lat, lon=lon, method="linear")
-        u = float(point[u_var].values)
-        v = float(point[v_var].values)
 
-        # Handle cases where interpolation yields NaN (e.g., edge of land mask)
-        if np.isnan(u) or np.isnan(v):
-            return 0.0, 0.0
-        return u, v
-    except KeyError:
-        # Out of bounds temporally or spatially
+    # 1. Find the nearest 1D index for U and V coordinates
+    _, idx_u = tree_u.query([lat, lon])
+    _, idx_v = tree_v.query([lat, lon])
+
+    # 2. Convert the 1D indices back to 2D (y, x) logical grid indices
+    y_u, x_u = np.unravel_index(idx_u, shape_u)
+    y_v, x_v = np.unravel_index(idx_v, shape_v)
+
+    # 3. Select the exact spatial points, then interpolate temporally
+    u_point = ds.isel(y=y_u, x=x_u).interp(time_counter=time, method="linear")
+    v_point = ds.isel(y=y_v, x=x_v).interp(time_counter=time, method="linear")
+
+    # 4. Extract U from the U-lookup (component 0) and V from V-lookup (component 1)
+    u = float(u_point['velocity'].isel(component=0).values)
+    v = float(v_point['velocity'].isel(component=1).values)
+
+    # Handle cases where interpolation yields NaN (e.g., land mask)
+    if np.isnan(u) or np.isnan(v):
         return 0.0, 0.0
+
+    return u, v
+
+    # except (KeyError, IndexError, ValueError):
+    #     # Out of bounds temporally or spatially
+    #     print('either key')
+    #     return 0.0, 0.0
 
 
 def rk4_step(
-    ds: xr.Dataset, time: np.datetime64, lat: float, lon: float, dt: float
+    ds: xr.Dataset,
+    time: np.datetime64,
+    lat: float,
+    lon: float,
+    dt: float,
+    tree_u: KDTree,
+    shape_u: tuple,
+    tree_v: KDTree,
+    shape_v: tuple
 ) -> tuple[float, float]:
+
     """
     Advances a particle position using a 4th-order Runge-Kutta scheme.
 
@@ -69,25 +93,26 @@ def rk4_step(
     dt_full = np.timedelta64(int(dt), "s")
 
     # K1
-    u1, v1 = get_velocity_at_point(ds, time, lat, lon)
+    u1, v1 = get_velocity_at_point(ds, time, lat, lon, tree_u, shape_u, tree_v, shape_v)
+
     dlon1, dlat1 = meters_to_degrees(u1, v1, lat)
 
     # K2
     lat2 = lat + dlat1 * (dt / 2)
     lon2 = lon + dlon1 * (dt / 2)
-    u2, v2 = get_velocity_at_point(ds, time + dt_half, lat2, lon2)
+    u2, v2 = get_velocity_at_point(ds, time + dt_half, lat2, lon2, tree_u, shape_u, tree_v, shape_v)
     dlon2, dlat2 = meters_to_degrees(u2, v2, lat2)
 
     # K3
     lat3 = lat + dlat2 * (dt / 2)
     lon3 = lon + dlon2 * (dt / 2)
-    u3, v3 = get_velocity_at_point(ds, time + dt_half, lat3, lon3)
+    u3, v3 = get_velocity_at_point(ds, time + dt_half, lat3, lon3, tree_u, shape_u, tree_v, shape_v)
     dlon3, dlat3 = meters_to_degrees(u3, v3, lat3)
 
     # K4
     lat4 = lat + dlat3 * dt
     lon4 = lon + dlon3 * dt
-    u4, v4 = get_velocity_at_point(ds, time + dt_full, lat4, lon4)
+    u4, v4 = get_velocity_at_point(ds, time + dt_full, lat4, lon4, tree_u, shape_u, tree_v, shape_v)
     dlon4, dlat4 = meters_to_degrees(u4, v4, lat4)
 
     # Weighted average update
@@ -110,6 +135,7 @@ def is_in_target_cell(lat: float, lon: float, target_bbox: dict[str, float]) -> 
 
 def track_particle_with_history(
     ds: xr.Dataset,
+    grid_data_path: Path,
     start_lat: float,
     start_lon: float,
     start_time: np.datetime64,
@@ -132,10 +158,25 @@ def track_particle_with_history(
     lats_history = [lat]
     lons_history = [lon]
 
-    lat_min, lat_max = float(ds.lat.min()), float(ds.lat.max())
-    lon_min, lon_max = float(ds.lon.min()), float(ds.lon.max())
+    # 1. Load the 2D coordinate arrays
+    grid_data = np.load(grid_data_path)
 
-    for _step in range(max_steps):
+    # 2. Flatten them to build the spatial trees
+    u_coords = np.column_stack((grid_data['u_lat'].ravel(), grid_data['u_lon'].ravel()))
+    v_coords = np.column_stack((grid_data['v_lat'].ravel(), grid_data['v_lon'].ravel()))
+
+    # 3. Build the KD-Trees (do this ONCE before the time loop)
+    tree_u = KDTree(u_coords)
+    tree_v = KDTree(v_coords)
+
+    # 4. Save the original 2D shapes so we can convert the 1D KDTree index back to 2D (y,x)
+    shape_u = grid_data['u_lat'].shape
+    shape_v = grid_data['v_lat'].shape
+
+    lat_min, lat_max = float(grid_data['v_lat'].min()), float(grid_data['v_lat'].max())
+    lon_min, lon_max = float(grid_data['u_lon'].min()), float(grid_data['u_lon'].max())
+
+    for _step in range(max_steps - 1):
         # 1. Evaluate target interception (only for ML/Phase 2)
         if target_bbox is not None:  # noqa SIM102
             if (
@@ -146,13 +187,15 @@ def track_particle_with_history(
 
         # 2. Out of bounds check
         if not (lat_min <= lat <= lat_max and lon_min <= lon <= lon_max):
+            print('out of bounds')
             return "out_of_bounds", np.array(lats_history), np.array(lons_history), transit_time
 
         # 3. Calculate next position using RK4
-        next_lat, next_lon = rk4_step(ds, current_time, lat, lon, dt)
+        next_lat, next_lon = rk4_step(ds, current_time, lat, lon, dt, tree_u, shape_u, tree_v, shape_v)
 
         # 4. Stuck on land check
-        if np.isclose(next_lat, lat) and np.isclose(next_lon, lon):
+        if np.isclose(next_lat, lat, rtol=0.0, atol=1e-10) and np.isclose(next_lon, lon, rtol=0.0, atol=1e-10):
+            print('stuck on land')
             return "stuck_on_land", np.array(lats_history), np.array(lons_history), transit_time
 
         # Update states and append to history logs
@@ -163,6 +206,8 @@ def track_particle_with_history(
         current_time += np.timedelta64(int(dt), "s")
         transit_time += dt
 
+        print(_step)
+
     status = "missed_target" if target_bbox is not None else "completed_duration"
     return status, np.array(lats_history), np.array(lons_history), transit_time
 
@@ -170,6 +215,7 @@ def track_particle_with_history(
 def evaluate_and_extract_paths(
     ds_orig: xr.Dataset,
     ds_pred: xr.Dataset,
+    grid_data_path: Path,
     seed_particles: list[tuple[float, float]],
     start_time: np.datetime64,
     baseline_duration_hours: float,
@@ -187,6 +233,8 @@ def evaluate_and_extract_paths(
     gt_steps = int((baseline_duration_hours * 3600) / dt)
     ml_max_steps = int(((baseline_duration_hours + safety_margin_hours) * 3600) / dt)
 
+    print('total steps', gt_steps)
+
     records = []
     trajectory_map = {}
 
@@ -194,6 +242,7 @@ def evaluate_and_extract_paths(
         # --- PHASE 1: GROUND TRUTH TRACKING ---
         _, lats_gt, lons_gt, _ = track_particle_with_history(
             ds=ds_orig,
+            grid_data_path=grid_data_path,
             start_lat=s_lat,
             start_lon=s_lon,
             start_time=start_time,
@@ -214,6 +263,7 @@ def evaluate_and_extract_paths(
         # --- PHASE 2: ML PREDICTED TRACKING ---
         status_ml, lats_ml, lons_ml, time_ml = track_particle_with_history(
             ds=ds_pred,
+            grid_data_path=grid_data_path,
             start_lat=s_lat,
             start_lon=s_lon,
             start_time=start_time,
@@ -256,5 +306,3 @@ def evaluate_and_extract_paths(
 
     df_metrics = pd.DataFrame(records)
     return df_metrics, trajectory_map
-
-    return pd.DataFrame(records)

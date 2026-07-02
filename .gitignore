@@ -225,3 +225,5 @@ images/
 scripts/scratch.py
 
 slurm_scripts/logs/*
+
+results/*

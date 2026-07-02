@@ -1,7 +1,7 @@
 import argparse
 import warnings
 
-from ml.inference_script import inference_over_test_set
+from ml.diagnostics import run_lagrangian_diagnostics
 
 from driftnet.config import MasterConfig
 from driftnet.utils import print_and_save_config
@@ -35,7 +35,9 @@ def main():
 
     # train_downscale(config.hyperparameters, config.data, config.experiment)
 
-    inference_over_test_set(config.data, config.experiment)
+    # inference_over_test_set(config.data, config.experiment)
+
+    run_lagrangian_diagnostics(config.data, config.experiment)
 
 
 if __name__ == "__main__":

@@ -22,7 +22,6 @@ CornerPoint = tuple[float, float]
 CornerPoints = Sequence[CornerPoint]
 Corners = BoundsLike | CornerPoints
 
-
 def _parse_corners(corners: Corners | None) -> Bounds | None:
     """Return lon/lat bounds from either bounds or four corner points."""
     if corners is None:
@@ -91,6 +90,28 @@ def _clip_to_extent(
     return lon[mask], lat[mask], u[mask], v[mask]
 
 
+def _block_average_2d(
+    arr: NDArray[np.floating],
+    row_stride: int,
+    col_stride: int
+) -> NDArray[np.floating]:
+    """Helper to block-average a single 2D array with independent row/col strides."""
+    if row_stride <= 1 and col_stride <= 1:
+        return arr
+
+    h, w = arr.shape
+    h_trunc = h - (h % row_stride)
+    w_trunc = w - (w % col_stride)
+    arr_trunc = arr[:h_trunc, :w_trunc]
+
+    return arr_trunc.reshape(
+        h_trunc // row_stride,
+        row_stride,
+        w_trunc // col_stride,
+        col_stride
+    ).mean(axis=(1, 3))
+
+
 def _downsample(
     lon: NDArray[np.floating],
     lat: NDArray[np.floating],
@@ -103,12 +124,18 @@ def _downsample(
     NDArray[np.floating],
     NDArray[np.floating],
 ]:
-    """Downsample coordinates and velocity components."""
+    """
+    Downsample coordinates and velocity components by block averaging.
+    Uses fast NumPy reshaping to calculate the mean of non-overlapping blocks.
+    """
+    if stride <= 1:
+        return lon, lat, u, v
+
     return (
-        lon[::stride, ::stride],
-        lat[::stride, ::stride],
-        u[::stride, ::stride],
-        v[::stride, ::stride],
+        _block_average_2d(lon, stride, stride),
+        _block_average_2d(lat, stride, stride),
+        _block_average_2d(u, stride, stride),
+        _block_average_2d(v, stride, stride),
     )
 
 
@@ -217,15 +244,13 @@ def plot_velocity_quiver(
         ax = cast(GeoAxes, ax)
         raw_fig = ax.figure
 
-        # SubFigures have a '.figure' attribute pointing to their parent Figure.
-        # We traverse up in case of nested SubFigures until we hit the root Figure.
         while not isinstance(raw_fig, Figure) and hasattr(raw_fig, "figure"):
             raw_fig = raw_fig.figure
 
         if not isinstance(raw_fig, Figure):
             raise TypeError("Could not resolve the root matplotlib Figure from the provided ax.")
 
-        fig = raw_fig  # Type checker now knows this is strictly a Figure
+        fig = raw_fig
 
     if u_input is not None:
         nlat, nlon = np.array(u_input).shape
@@ -242,13 +267,11 @@ def plot_velocity_quiver(
     res_lat = base_lat // nlat
     res_lon = base_lon // nlon
 
-    u_lon = u_lon[::res_lon, ::res_lon]
-    v_lon = v_lon[::res_lon, ::res_lon]
-    u_lat = u_lat[::res_lat, ::res_lat]
-    v_lat = v_lat[::res_lat, ::res_lat]
-
-    u_lon = degrade_coords(u_lon, res_lon, "u")
-    v_lon = degrade_coords(v_lon, res_lon, "v")
+    # Degrade the coordinate grids to match the input velocity resolution via block averaging
+    u_lon = _block_average_2d(u_lon, res_lat, res_lon)
+    v_lon = _block_average_2d(v_lon, res_lat, res_lon)
+    u_lat = _block_average_2d(u_lat, res_lat, res_lon)
+    v_lat = _block_average_2d(v_lat, res_lat, res_lon)
 
     extent_lons = []
     extent_lats = []
@@ -417,37 +440,67 @@ def plot_velocity_heatmap(
     return mesh
 
 
-# Lagrangian Diagnostic plots
-
 
 def plot_side_by_side_trajectories(
     ds_gt: xr.Dataset,
     ds_pred: xr.Dataset,
+    grid_coords_path: Path,
     lons_gt: np.ndarray,
     lats_gt: np.ndarray,
     lons_pred: np.ndarray,
     lats_pred: np.ndarray,
     time_index: int = 0,
-    u_var: str = "u",
-    v_var: str = "v",
+    corners=None, # <--- NEW optional argument added
 ):
     """
     Plots GT and Predicted trajectories side-by-side over their respective velocity fields.
-    Assumes lons/lats are 1D arrays of a single particle's history, or 2D arrays (particles, time).
+    Assumes lons/lats are 1D arrays of a single particle's history, or 2D arrays (particles, time_counter).
+    Dynamically block-averages coordinate grids to match velocity field resolutions.
     """
-    # Calculate velocity magnitude for the background heatmap
-    mag_gt = np.sqrt(
-        ds_gt[u_var].isel(time=time_index) ** 2 + ds_gt[v_var].isel(time=time_index) ** 2
-    )
 
-    mag_pred = np.sqrt(
-        ds_pred[u_var].isel(time=time_index) ** 2 + ds_pred[v_var].isel(time=time_index) ** 2
-    )
+    # Extract components and calculate magnitude
+    u_gt = ds_gt['velocity'].isel(component=0, time_counter=time_index).values
+    v_gt = ds_gt['velocity'].isel(component=1, time_counter=time_index).values
+    mag_gt = np.sqrt(u_gt**2 + v_gt**2)
+
+    u_pred = ds_pred['velocity'].isel(component=0, time_counter=time_index).values
+    v_pred = ds_pred['velocity'].isel(component=1, time_counter=time_index).values
+    mag_pred = np.sqrt(u_pred**2 + v_pred**2)
+
+    # Load base coordinates
+    grid_data = np.load(grid_coords_path)
+    base_lon = grid_data['rho_lon']
+    base_lat = grid_data['rho_lat']
+    base_h, base_w = base_lon.shape
+
+    # Calculate strides and downsample coordinates for Ground Truth
+    gt_h, gt_w = mag_gt.shape
+    res_lat_gt = max(1, base_h // gt_h)
+    res_lon_gt = max(1, base_w // gt_w)
+
+    lon_gt = _block_average_2d(base_lon, res_lat_gt, res_lon_gt)
+    lat_gt = _block_average_2d(base_lat, res_lat_gt, res_lon_gt)
+
+    # Calculate strides and downsample coordinates for ML Prediction
+    pred_h, pred_w = mag_pred.shape
+    res_lat_pred = max(1, base_h // pred_h)
+    res_lon_pred = max(1, base_w // pred_w)
+
+    lon_pred = _block_average_2d(base_lon, res_lat_pred, res_lon_pred)
+    lat_pred = _block_average_2d(base_lat, res_lat_pred, res_lon_pred)
+
+    # --- CALCULATE EXTENT FOR ZOOM ---
+    # Calculates a bounding box padded by 2 degrees around the GT trajectory,
+    # or uses explicit corners if provided.
+    extent = _get_extent(lons_gt, lats_gt, corners=corners, padding=2)
 
     fig, axes = plt.subplots(1, 2, figsize=(16, 8), subplot_kw={"projection": ccrs.PlateCarree()})
 
     # Common plot settings
     for ax in axes:
+        # Apply the zoom extent directly to the cartopy axes
+        ax.set_extent(extent, crs=ccrs.PlateCarree())
+
         ax.add_feature(cfeature.LAND, facecolor="lightgray", zorder=2)
         ax.add_feature(cfeature.COASTLINE, linewidth=0.5, zorder=2)
         gl = ax.gridlines(draw_labels=True, linestyle="--", alpha=0.5)
@@ -458,52 +511,41 @@ def plot_side_by_side_trajectories(
     ax = axes[0]
     ax.set_title("Ground Truth: Velocity & Trajectories")
 
-    # Plot background velocity magnitude
+    # Plot background velocity magnitude using downsampled GT coordinates
     pcm1 = ax.pcolormesh(
-        ds_gt.lon, ds_gt.lat, mag_gt, transform=ccrs.PlateCarree(), cmap="viridis", shading="auto"
+        lon_gt,
+        lat_gt,
+        mag_gt,
+        transform=ccrs.PlateCarree(),
+        cmap="viridis",
+        shading="auto"
     )
 
-    # Plot GT trajectory (zorder=3 to render above land if needed, though they shouldn't cross it)
+    # Plot GT trajectory
     if lons_gt.ndim == 1:
         ax.plot(
-            lons_gt,
-            lats_gt,
+            lons_gt, lats_gt,
             transform=ccrs.PlateCarree(),
-            color="white",
-            linewidth=2,
-            label="GT Track",
+            color="white", linewidth=2, label="GT Track", zorder=3
         )
-
         ax.scatter(
-            lons_gt[0],
-            lats_gt[0],
-            color="green",
-            marker="o",
-            transform=ccrs.PlateCarree(),
-            label="Start",
-            zorder=4,
+            lons_gt[0], lats_gt[0],
+            color="green", marker="o", transform=ccrs.PlateCarree(), label="Start", zorder=4,
         )
-
         ax.scatter(
-            lons_gt[-1],
-            lats_gt[-1],
-            color="red",
-            marker="X",
-            transform=ccrs.PlateCarree(),
-            label="End",
-            zorder=4,
+            lons_gt[-1], lats_gt[-1],
+            color="red", marker="X", transform=ccrs.PlateCarree(), label="End", zorder=4,
         )
-
     ax.legend(loc="upper right")
 
     # --- Panel 2: ML Prediction ---
     ax = axes[1]
     ax.set_title("ML Predicted: Velocity & Trajectories")
 
-    # Plot background velocity magnitude
+    # Plot background velocity magnitude using downsampled Pred coordinates
     ax.pcolormesh(
-        ds_pred.lon,
-        ds_pred.lat,
+        lon_pred,
+        lat_pred,
         mag_pred,
         transform=ccrs.PlateCarree(),
         cmap="viridis",
@@ -513,40 +555,30 @@ def plot_side_by_side_trajectories(
     # Plot Pred trajectory
     if lons_pred.ndim == 1:
         ax.plot(
-            lons_pred,
-            lats_pred,
+            lons_pred, lats_pred,
             transform=ccrs.PlateCarree(),
-            color="white",
-            linestyle="--",
-            linewidth=2,
-            label="Pred Track",
+            color="white", linestyle="--", linewidth=2, label="Pred Track", zorder=3
         )
-
         ax.scatter(
-            lons_pred[0],
-            lats_pred[0],
-            color="green",
-            marker="o",
-            transform=ccrs.PlateCarree(),
-            zorder=4,
+            lons_pred[0], lats_pred[0],
+            color="green", marker="o", transform=ccrs.PlateCarree(), zorder=4,
         )
-
         ax.scatter(
-            lons_pred[-1],
-            lats_pred[-1],
-            color="red",
-            marker="X",
-            transform=ccrs.PlateCarree(),
-            zorder=4,
+            lons_pred[-1], lats_pred[-1],
+            color="red", marker="X", transform=ccrs.PlateCarree(), zorder=4,
         )
-
     ax.legend(loc="upper right")
 
     # Add a shared colorbar
     cbar = fig.colorbar(pcm1, ax=axes, orientation="horizontal", fraction=0.05, pad=0.1)
     cbar.set_label("Velocity Magnitude (m/s)")
 
-    plt.show()
+    # Create output directory if it doesn't exist
+    output_dir = Path('images')
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    plt.savefig(output_dir / 'test.png', bbox_inches="tight")
+    plt.close(fig)
 
 
 def plot_overlapping_trajectories_on_neutral_map(

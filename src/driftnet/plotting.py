@@ -465,71 +465,91 @@ def plot_velocity_heatmap(
     return mesh
 
 
+def _normalize_trajectories(
+    data: NDArray[np.floating] | Sequence[NDArray[np.floating]] | None
+) -> list[NDArray[np.floating]]:
+    """Helper to safely convert varying inputs into a strict list of 1D arrays."""
+    if data is None:
+        return []
+    if isinstance(data, np.ndarray):
+        return list(data) if data.ndim == 2 else [data]
+    return list(data)
+
+
 def plot_side_by_side_trajectories(
     ds_gt: xr.Dataset,
     ds_pred: xr.Dataset,
     grid_coords_path: Path | str,
-    lons_gt: NDArray[np.floating],
-    lats_gt: NDArray[np.floating],
-    lons_pred: NDArray[np.floating],
-    lats_pred: NDArray[np.floating],
+    lons_gt: NDArray[np.floating] | Sequence[NDArray[np.floating]],
+    lats_gt: NDArray[np.floating] | Sequence[NDArray[np.floating]],
+    lons_pred: NDArray[np.floating] | Sequence[NDArray[np.floating]],
+    lats_pred: NDArray[np.floating] | Sequence[NDArray[np.floating]],
+    ds_interp: xr.Dataset | None = None,
+    lons_interp: NDArray[np.floating] | Sequence[NDArray[np.floating]] | None = None,
+    lats_interp: NDArray[np.floating] | Sequence[NDArray[np.floating]] | None = None,
     time_index: int = 0,
     corners: Corners | None | str = None,
     padding: float = 2.0,
     save_name: str = 'test.png'
 ) -> None:
     """
-    Plots GT and Predicted trajectories side-by-side over their respective velocity fields.
-    Assumes lons/lats are 1D arrays of a single particle's history, or 2D arrays (particles, time_counter).
-    Dynamically block-averages coordinate grids to match velocity field resolutions.
+    Plots GT, Predicted, and optionally Interpolated trajectories side-by-side.
     """
-
-    # Extract components and calculate magnitude
-    u_gt = ds_gt['velocity'].isel(component=0, time_counter=time_index).values
-    v_gt = ds_gt['velocity'].isel(component=1, time_counter=time_index).values
-    mag_gt = np.sqrt(u_gt**2 + v_gt**2)
-
-    u_pred = ds_pred['velocity'].isel(component=0, time_counter=time_index).values
-    v_pred = ds_pred['velocity'].isel(component=1, time_counter=time_index).values
-    mag_pred = np.sqrt(u_pred**2 + v_pred**2)
-
     # Load base coordinates
     grid_data = np.load(grid_coords_path)
     base_lon = grid_data['rho_lon']
     base_lat = grid_data['rho_lat']
     base_h, base_w = base_lon.shape
 
-    # Calculate strides and downsample coordinates for Ground Truth
-    gt_h, gt_w = mag_gt.shape
-    res_lat_gt = max(1, base_h // gt_h)
-    res_lon_gt = max(1, base_w // gt_w)
+    # Helper function to extract and downsample a dataset
+    def _prepare_ds(ds: xr.Dataset):
+        u = ds['velocity'].isel(component=0, time_counter=time_index).values
+        v = ds['velocity'].isel(component=1, time_counter=time_index).values
+        mag = np.sqrt(u**2 + v**2)
 
-    lon_gt = _block_average_2d(base_lon, res_lat_gt, res_lon_gt)
-    lat_gt = _block_average_2d(base_lat, res_lat_gt, res_lon_gt)
+        h, w = mag.shape
+        res_lat = max(1, base_h // h)
+        res_lon = max(1, base_w // w)
 
-    # Calculate strides and downsample coordinates for ML Prediction
-    pred_h, pred_w = mag_pred.shape
-    res_lat_pred = max(1, base_h // pred_h)
-    res_lon_pred = max(1, base_w // pred_w)
+        lon_d = _block_average_2d(base_lon, res_lat, res_lon)
+        lat_d = _block_average_2d(base_lat, res_lat, res_lon)
+        return mag, lon_d, lat_d
 
-    lon_pred = _block_average_2d(base_lon, res_lat_pred, res_lon_pred)
-    lat_pred = _block_average_2d(base_lat, res_lat_pred, res_lon_pred)
+    # Prepare datasets
+    mag_gt, lon_gt, lat_gt = _prepare_ds(ds_gt)
+    mag_pred, lon_pred, lat_pred = _prepare_ds(ds_pred)
 
-    # --- CALCULATE EXTENT FOR ZOOM ---
-    extent = _get_extent(lons_gt, lats_gt, corners=corners, padding=padding)
+    # Initialize interpolation variables so they are always bound
+    mag_interp = lon_interp = lat_interp = None
+    if ds_interp is not None:
+        mag_interp, lon_interp, lat_interp = _prepare_ds(ds_interp)
 
-    fig, axes_raw = plt.subplots(1, 2, figsize=(16, 8), subplot_kw={"projection": ccrs.PlateCarree()})
+    # Normalize trajectory inputs to strict lists (now guaranteed to never be None)
+    _lons_gt = _normalize_trajectories(lons_gt)
+    _lats_gt = _normalize_trajectories(lats_gt)
+    _lons_pred = _normalize_trajectories(lons_pred)
+    _lats_pred = _normalize_trajectories(lats_pred)
+    _lons_interp = _normalize_trajectories(lons_interp)
+    _lats_interp = _normalize_trajectories(lats_interp)
 
-    # Cast the axes array elements to GeoAxes for Pylance
-    axes = [cast(GeoAxes, ax) for ax in axes_raw]
+    # --- CALCULATE MAP EXTENT ---
+    # Safe list addition, even if _lons_interp is an empty list []
+    all_lons = _lons_gt + _lons_pred + _lons_interp
+    all_lats = _lats_gt + _lats_pred + _lats_interp
 
-    # Common plot settings
+    extent = _get_extent(np.concatenate(all_lons), np.concatenate(all_lats), corners=corners, padding=padding)
+
+    # Dynamically scale width based on number of panels
+    has_interp = ds_interp is not None and len(_lons_interp) > 0 and len(_lats_interp) > 0
+    num_panels = 3 if has_interp else 2
+
+    fig, axes_raw = plt.subplots(1, num_panels, figsize=(8 * num_panels, 8), subplot_kw={"projection": ccrs.PlateCarree()})
+    axes = [cast(GeoAxes, ax) for ax in (axes_raw if num_panels > 1 else [axes_raw])]
+
+    # Apply common styling
     for ax in axes:
-        # Only apply specific extent if one was provided or calculated
-        # Otherwise, Cartopy auto-fits to the global velocity map
         if extent is not None:
             ax.set_extent(extent, crs=ccrs.PlateCarree())
-
         ax.add_feature(cfeature.LAND, facecolor="lightgray", zorder=2)
         ax.add_feature(cfeature.COASTLINE, linewidth=0.5, zorder=2)
         gl = ax.gridlines(draw_labels=True, linestyle="--", alpha=0.5)
@@ -538,76 +558,43 @@ def plot_side_by_side_trajectories(
 
     # --- Panel 1: Ground Truth ---
     ax0 = axes[0]
-    ax0.set_title("Ground Truth: Velocity & Trajectories")
-
-    # Plot background velocity magnitude using downsampled GT coordinates
-    pcm1 = ax0.pcolormesh(
-        lon_gt,
-        lat_gt,
-        mag_gt,
-        transform=ccrs.PlateCarree(),
-        cmap="viridis",
-        shading="auto"
-    )
-
-    # Plot GT trajectory
-    if lons_gt.ndim == 1:
-        ax0.plot(
-            lons_gt, lats_gt,
-            transform=ccrs.PlateCarree(),
-            color="white", linewidth=2, label="GT Track", zorder=3
-        )
-        ax0.scatter(
-            lons_gt[0], lats_gt[0],
-            color="green", marker="o", transform=ccrs.PlateCarree(), label="Start", zorder=4,
-        )
-        ax0.scatter(
-            lons_gt[-1], lats_gt[-1],
-            color="red", marker="X", transform=ccrs.PlateCarree(), label="End", zorder=4,
-        )
+    ax0.set_title("Ground Truth")
+    pcm = ax0.pcolormesh(lon_gt, lat_gt, mag_gt, transform=ccrs.PlateCarree(), cmap="viridis", shading="auto")
+    for i, (lons, lats) in enumerate(zip(_lons_gt, _lats_gt)):
+        ax0.plot(lons, lats, transform=ccrs.PlateCarree(), color="white", linewidth=2, label="Track" if i == 0 else None, zorder=3)
+        ax0.scatter(lons[0], lats[0], color="green", marker="o", transform=ccrs.PlateCarree(), zorder=4)
+        ax0.scatter(lons[-1], lats[-1], color="red", marker="X", transform=ccrs.PlateCarree(), zorder=4)
     ax0.legend(loc="upper right")
 
     # --- Panel 2: ML Prediction ---
     ax1 = axes[1]
-    ax1.set_title("ML Predicted: Velocity & Trajectories")
-
-    # Plot background velocity magnitude using downsampled Pred coordinates
-    ax1.pcolormesh(
-        lon_pred,
-        lat_pred,
-        mag_pred,
-        transform=ccrs.PlateCarree(),
-        cmap="viridis",
-        shading="auto",
-    )
-
-    # Plot Pred trajectory
-    if lons_pred.ndim == 1:
-        ax1.plot(
-            lons_pred, lats_pred,
-            transform=ccrs.PlateCarree(),
-            color="white", linewidth=2, label="Pred Track", zorder=3
-        )
-        ax1.scatter(
-            lons_pred[0], lats_pred[0],
-            color="green", marker="o", transform=ccrs.PlateCarree(), zorder=4,
-        )
-        ax1.scatter(
-            lons_pred[-1], lats_pred[-1],
-            color="red", marker="X", transform=ccrs.PlateCarree(), zorder=4,
-        )
+    ax1.set_title("ML Predicted")
+    ax1.pcolormesh(lon_pred, lat_pred, mag_pred, transform=ccrs.PlateCarree(), cmap="viridis", shading="auto")
+    for i, (lons, lats) in enumerate(zip(_lons_pred, _lats_pred)):
+        ax1.plot(lons, lats, transform=ccrs.PlateCarree(), color="white", linewidth=2, label="Track" if i == 0 else None, zorder=3)
+        ax1.scatter(lons[0], lats[0], color="green", marker="o", transform=ccrs.PlateCarree(), zorder=4)
+        ax1.scatter(lons[-1], lats[-1], color="red", marker="X", transform=ccrs.PlateCarree(), zorder=4)
     ax1.legend(loc="upper right")
 
-    # Add a shared colorbar (matplotlib needs the raw axes array)
-    cbar = fig.colorbar(pcm1, ax=axes_raw, orientation="horizontal", fraction=0.05, pad=0.1)
+    # --- Panel 3: Interpolated (Optional) ---
+    if has_interp and lon_interp is not None and lat_interp is not None and mag_interp is not None:
+        ax2 = axes[2]
+        ax2.set_title("Bilinear Interpolation")
+        ax2.pcolormesh(lon_interp, lat_interp, mag_interp, transform=ccrs.PlateCarree(), cmap="viridis", shading="auto")
+        for i, (lons, lats) in enumerate(zip(_lons_interp, _lats_interp)):
+            ax2.plot(lons, lats, transform=ccrs.PlateCarree(), color="white", linewidth=2, label="Track" if i == 0 else None, zorder=3)
+            ax2.scatter(lons[0], lats[0], color="green", marker="o", transform=ccrs.PlateCarree(), zorder=4)
+            ax2.scatter(lons[-1], lats[-1], color="red", marker="X", transform=ccrs.PlateCarree(), zorder=4)
+        ax2.legend(loc="upper right")
+
+    cbar = fig.colorbar(pcm, ax=axes_raw, orientation="horizontal", fraction=0.05, pad=0.1)
     cbar.set_label("Velocity Magnitude (m/s)")
 
-    # Create output directory if it doesn't exist
     output_dir = Path('images')
     output_dir.mkdir(parents=True, exist_ok=True)
-
     plt.savefig(output_dir / save_name, bbox_inches="tight")
     plt.close(fig)
+
 
 def plot_overlapping_trajectories_on_neutral_map(
     lons_gt: NDArray[np.floating],

@@ -4,6 +4,8 @@ import dask.array as da
 import numpy as np
 import xarray as xr
 from numpy.typing import NDArray
+import torch.nn.functional as F
+import torch
 
 # ==========================================
 # General utility functions
@@ -284,3 +286,98 @@ def _compute_c_grid_divergence(
 
     # --- 3. Total Divergence ---
     return du_dx + dv_dy
+
+
+
+
+# ===============================
+# Linearly Interpolate Zarr
+# ===============================
+
+
+def interpolate_zarr_store(
+    degraded_zarr_path: Path | str,
+    target_resolution_zarr: Path | str,
+    output_zarr_path: Path | str,
+    chunk_size: int = 48
+) -> None:
+    """
+    Reads a low-resolution (degraded) Zarr store in batches, bilinearly
+    interpolates the velocity fields back to the original resolution, and writes
+    them to a new Zarr store.
+
+    Parameters:
+    - degraded_zarr_path: Path to the degraded (low-res) Zarr file.
+    - target_resolution_zarr: Path to the original (high-res) Zarr file to get target dimensions.
+    - output_zarr_path: Path where the interpolated Zarr store will be saved.
+    - chunk_size: Number of time steps to process in memory at once.
+    """
+    degraded_zarr_path = Path(degraded_zarr_path)
+    target_resolution_zarr = Path(target_resolution_zarr)
+    output_zarr_path = Path(output_zarr_path)
+
+    # Open both datasets to establish the source data and the target spatial dimensions
+    ds_deg = xr.open_zarr(degraded_zarr_path)
+    ds_orig = xr.open_zarr(target_resolution_zarr)
+
+    num_times = ds_deg.sizes["time_counter"]
+    # Extract target (y, x) shape directly from the original resolution zarr
+    target_shape = ds_orig.velocity.shape[2:]
+
+    # Pre-load the times we have already interpolated (if the target store exists)
+    existing_times = None
+    if output_zarr_path.exists():
+        print(f"{output_zarr_path} already exists. Checking for existing times...")
+        existing_ds = xr.open_zarr(output_zarr_path)
+        if "time_counter" in existing_ds:
+            existing_times = existing_ds.time_counter.values
+
+    for start in range(0, num_times, chunk_size):
+        end = min(start + chunk_size, num_times)
+
+        # Check the times for this specific batch
+        batch_times = ds_deg.time_counter.isel(time_counter=slice(start, end)).values
+
+        # If we have an existing store, check if this entire batch is already inside it
+        if existing_times is not None and np.isin(batch_times, existing_times).all():
+            print(f"Skipping time steps {start} to {end} (Already interpolated).")
+            continue
+
+        print(f"Interpolating time steps {start} to {end}...")
+
+        # Load batch of times into memory (Shape: batch, 2, y, x)
+        vel_chunk_low = ds_deg.velocity.isel(time_counter=slice(start, end)).values
+
+        # Convert to PyTorch tensor to utilize fast vectorized bilinear interpolation
+        vel_tensor = torch.from_numpy(vel_chunk_low).float()
+
+        # Interpolate spatially to the target shape
+        # align_corners=True matches the behavior of the Up() block in your U-Net model
+        vel_interp = F.interpolate(
+            vel_tensor,
+            size=target_shape,
+            mode="bilinear",
+            align_corners=True
+        ).numpy()
+
+        # Format back into an Xarray dataset
+        ds_out = xr.Dataset(
+            data_vars=dict(velocity=(["time_counter", "component", "y", "x"], vel_interp)),
+            coords=dict(
+                time_counter=batch_times,
+                component=ds_deg.component.values
+            ),
+        )
+
+        # Re-chunk data to match standard format
+        ds_out_chunked = ds_out.chunk(
+            {"time_counter": chunk_size, "component": 2, "y": -1, "x": -1}
+        )
+
+        # Save or append to the target Zarr store
+        if not output_zarr_path.exists():
+            ds_out_chunked.to_zarr(output_zarr_path, mode="w")
+        else:
+            ds_out_chunked.to_zarr(output_zarr_path, append_dim="time_counter")
+
+    print(f"Interpolation complete. Output saved to {output_zarr_path}")

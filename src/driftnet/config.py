@@ -29,7 +29,6 @@ class ExperimentConfig:
         # 4. Create the necessary directories
         os.makedirs(self.base_path, exist_ok=True)
         os.makedirs(self.base_path / "model_data", exist_ok=True)
-        os.makedirs(self.base_path / "predictions", exist_ok=True)
 
         self.model_weights = self.base_path / "model_data" / "best_weights.pth"
         self.model_predictions = self.base_path / "predictions.zarr"
@@ -68,10 +67,26 @@ class DegradedResConfig:
 
 
 @dataclass
+class InterpolatedConfig:
+    dir: str = ""
+    zarr_name: str = "mock.zarr"
+
+    def __post_init__(self):
+        self.zarr_name = self.zarr_name or "mock.zarr"
+        # Pre-compute the full Path object
+        self.full_path = Path(self.dir) / self.zarr_name
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+
+@dataclass
 class DataConfig:
     # These contain our nested dataclasses
+    # Give them a default of None so they don't crash if omitted from the YAML
     original_res: Path
     degraded_res: Path
+    interpolated: Path
 
     nc_directory: str = ""
     grid_params: str = ""
@@ -93,6 +108,11 @@ class DataConfig:
             self.degraded_res = Path()
         elif isinstance(self.degraded_res, dict):
             self.degraded_res = DegradedResConfig(**self.degraded_res).full_path
+
+        if self.interpolated is None:
+            self.interpolated = Path()
+        elif isinstance(self.interpolated, dict):
+            self.interpolated = InterpolatedConfig(**self.interpolated).full_path
 
     def __getitem__(self, key):
         return getattr(self, key)

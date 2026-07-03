@@ -30,7 +30,9 @@ dependencies = [
     "zarr",
     "dask",
     "torch",
-    "rich"
+    "rich",
+    "parcels",
+    "polars"
 ]
 
 # 🛠️ DEVELOPMENT DEPENDENCIES

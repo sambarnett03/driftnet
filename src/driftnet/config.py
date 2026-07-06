@@ -31,7 +31,6 @@ class ExperimentConfig:
         os.makedirs(self.base_path / "model_data", exist_ok=True)
         os.makedirs(self.base_path / "model_data" / "temp", exist_ok=True)
         os.makedirs(self.base_path / "metrics", exist_ok=True)
-        os.makedirs(self.base_path / "data_splits", exist_ok=True)
 
         self.model_weights = self.base_path / "model_data" / "best_weights.pth"
         self.model_predictions = self.base_path / "predictions.zarr"

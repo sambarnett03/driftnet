@@ -55,9 +55,9 @@ def inference_over_test_set(
             }
             # Chunk along the new dimension names
             ds_batch = ds_batch.chunk({"time_counter": 48, "component": -1, "y": -1, "x": -1})
-            ds_batch.to_zarr(str(output_zarr_path), mode="w")
+            ds_batch.to_zarr(output_zarr_path, mode="w") # type: ignore
         else:
-            ds_batch.to_zarr(str(output_zarr_path), append_dim="time_counter")
+            ds_batch.to_zarr(output_zarr_path, append_dim="time_counter")
 
     # 3. Final calculations
     avg_test_loss = total_loss / num_batches
@@ -72,7 +72,7 @@ def inference_over_test_set(
 
     # Write the time_counter coordinates into the Zarr store using Xarray append mode
     ds_time = xr.Dataset(coords={"time_counter": true_time_coords})
-    ds_time.to_zarr(str(output_zarr_path), mode="a")
+    ds_time.to_zarr(output_zarr_path, mode="a") # type: ignore
 
     # Patch the MSE via raw zarr
     z_store = zarr.open(str(output_zarr_path), mode="a")

@@ -537,9 +537,8 @@ def plot_lagrangian_trajectories(
     data_config: DataConfig,
     exp_config: ExperimentConfig,
     fields_to_plot: list[FieldType],
-    time_index: int = 0,
+    folder_name: str | Path,
     padding: float = 2.0,
-    save_name: str = "trajectory_comparison.png",
 ) -> None:
     """
     Dynamically plots a variable number of panels side-by-side matching the requested field strings.
@@ -623,10 +622,10 @@ def plot_lagrangian_trajectories(
             ax=ax, title=panel["title"], track_lons=panel["lons"], track_lats=panel["lats"]
         )
 
-    output_dir = Path("images") / "trajectories"
+    output_dir = Path("images") / f"{folder_name}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    save_path = output_dir / save_name
+    save_path = output_dir / "trajectory_comparison.png"
     plt.savefig(save_path, bbox_inches="tight", dpi=300)
     plt.close(fig)
     print(f"Dynamic trajectory plot saved to {save_path}")

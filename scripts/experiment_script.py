@@ -1,7 +1,9 @@
 import argparse
 import warnings
 
-from metrics.lagrange_diagnostics import print_final_metrics
+from metrics.lagrange_diagnostics import evaluate_predictions
+from ml.inference_script import inference_over_test_set
+from ml.training_script import train_downscale
 
 from driftnet.config import MasterConfig
 from driftnet.utils import print_and_save_config
@@ -31,19 +33,11 @@ def main():
     print_and_save_config(config)
 
     # Code to run
-    # preprocess_data(config.data, plot_graphs=False)
+    train_downscale(config.hyperparameters, config.data, config.experiment)
 
-    # degrade_zarr_store(config.data)
+    inference_over_test_set(config.data, config.hyperparameters, config.experiment)
 
-    # train_downscale(config.hyperparameters, config.data, config.experiment)
-
-    # inference_over_test_set(config.data, config.hyperparameters, config.experiment)
-
-    # run_lagrangian_diagnostics(config.data, config.experiment)
-
-    # interpolate_zarr_store(config.data, config.hyperparameters)
-
-    print_final_metrics(config.experiment)
+    evaluate_predictions(config.data, config.experiment)
 
 
 if __name__ == "__main__":

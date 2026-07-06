@@ -298,7 +298,7 @@ def get_connectivity_metrics(exp_config: ExperimentConfig) -> tuple[pl.DataFrame
     return df_compare, agg_df
 
 
-def plot_connectivity_results(agg_df: pl.DataFrame):
+def plot_connectivity_results(agg_df: pl.DataFrame, folder_name: str | Path):
 
     time_hours = (agg_df["time"] - agg_df["time"][0]).dt.total_minutes() / 60.0
 
@@ -318,7 +318,7 @@ def plot_connectivity_results(agg_df: pl.DataFrame):
     plt.legend()
     plt.grid(True, linestyle=":", alpha=0.7)
 
-    Path("images").mkdir(parents=True, exist_ok=True)
-    plot_path = "images/results/lagrangian_divergence_metrics.png"
+    Path(f"images/{folder_name}").mkdir(parents=True, exist_ok=True)
+    plot_path = f"images/{folder_name}/lagrangian_divergence_metrics.png"
     plt.savefig(plot_path, bbox_inches="tight", dpi=300)
     print(f"Metrics plot successfully saved to {plot_path}")

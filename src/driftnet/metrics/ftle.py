@@ -96,7 +96,7 @@ def add_cross_field_lyapunov(
     return df_lyap, agg_lyap_df
 
 
-def plot_ftle_results(agg_df: pl.DataFrame):
+def plot_ftle_results(agg_df: pl.DataFrame, folder_name: str | Path):
 
     time_hours = (agg_df["time"] - agg_df["time"][0]).dt.total_minutes() / 60.0
 
@@ -118,7 +118,7 @@ def plot_ftle_results(agg_df: pl.DataFrame):
     plt.legend()
     plt.grid(True, linestyle=":", alpha=0.7)
 
-    Path("images").mkdir(parents=True, exist_ok=True)
-    plot_path = "images/results/layp.png"
+    Path(f"images/{folder_name}").mkdir(parents=True, exist_ok=True)
+    plot_path = f"images/{folder_name}/layp.png"
     plt.savefig(plot_path, bbox_inches="tight", dpi=300)
     print(f"Metrics plot successfully saved to {plot_path}")

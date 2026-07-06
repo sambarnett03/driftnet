@@ -57,13 +57,12 @@ def save_metrics(data_config: DataConfig, exp_config: ExperimentConfig, _plot=Fa
     calculate_velocity_mse(data_config, exp_config)
 
     if _plot is True:
-        plot_connectivity_results(df_agg)
-        plot_ftle_results(lyap_agg)
+        folder_name = exp_config.exp_name
+        plot_connectivity_results(df_agg, folder_name)
+        plot_ftle_results(lyap_agg, folder_name)
 
         # Plot trajectories
-        plot_lagrangian_trajectories(
-            data_config, exp_config, ["truth", "predicted", "interpolated"]
-        )
+        plot_lagrangian_trajectories(data_config, exp_config, ["truth", "predicted"], folder_name)
 
 
 def print_final_metrics(exp_config):
@@ -90,3 +89,9 @@ def print_final_metrics(exp_config):
     print(f"Average MSE in velocity fields: {average_mse:.4f}")
     print(f"Average error in distance between pairs: {average_distance:.4f} km")
     print(f"Average FTLE between pairs: {average_ftle:.6f} days^-1")
+
+
+def evaluate_predictions(data_config: DataConfig, exp_config: ExperimentConfig):
+    compute_trajectories(data_config, exp_config)
+    save_metrics(data_config, exp_config, _plot=True)
+    print_final_metrics(exp_config)

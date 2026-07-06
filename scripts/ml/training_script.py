@@ -17,8 +17,11 @@ def train_downscale(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
+    # Assuming 'config' is an instance of your MasterConfig dataclass:
     train_dataset, val_dataset, test_dataset = get_train_val_test_datasets(
-        data_config.degraded_res, data_config.original_res, hyper_config.batch_size
+        data_config,
+        hyper_config,
+        train_keep_fraction=0.05,  # Adjust this depending on your data budget
     )
 
     # Note: batch_size=None tells PyTorch the dataset handles batching itself!

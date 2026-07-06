@@ -2,17 +2,20 @@ import numpy as np
 import xarray as xr
 import zarr
 
-from driftnet.config import DataConfig, ExperimentConfig
-from driftnet.ml.dataset import get_train_val_test_datasets
+from driftnet.config import DataConfig, ExperimentConfig, HyperparametersConfig
+from driftnet.ml.dataset import OceanDownscaleSet, _read_indices_from_csv
 from driftnet.ml.inference import stream_inference
 
 
-def inference_over_test_set(data_config: DataConfig, exp_config: ExperimentConfig):
+def inference_over_test_set(
+    data_config: DataConfig, hyper_config: HyperparametersConfig, exp_config: ExperimentConfig
+):
 
     print("Initializing datasets...")
-    _, _, test_dataset = get_train_val_test_datasets(
-        data_config.degraded_res, data_config.original_res, batch_size=16
-    )
+    csv_path = data_config.splits / "test_indices.csv"
+    test_indices = _read_indices_from_csv(csv_path)
+
+    test_dataset = OceanDownscaleSet(data_config, hyper_config, time_indices=test_indices)
 
     output_zarr_path = exp_config.model_predictions
     print(f"Streaming structured predictions directly to {output_zarr_path}...")
@@ -65,7 +68,7 @@ def inference_over_test_set(data_config: DataConfig, exp_config: ExperimentConfi
     print("Aligning true time coordinates with predictions...")
     with xr.open_zarr(data_config.original_res) as ds_truth:
         # Extract the exact number of timestamps needed
-        true_time_coords = ds_truth.time_counter[-current_sample_idx:].values
+        true_time_coords = ds_truth.time_counter[test_indices].values
 
     # Write the time_counter coordinates into the Zarr store using Xarray append mode
     ds_time = xr.Dataset(coords={"time_counter": true_time_coords})

@@ -1,11 +1,10 @@
 import argparse
 import warnings
 
-from metrics.lagrange_diagnostics import run_lagrangian_diagnostics
+from metrics.lagrange_diagnostics import print_final_metrics
 
 from driftnet.config import MasterConfig
 from driftnet.utils import print_and_save_config
-from driftnet.data import interpolate_zarr_store
 
 # --- Suppress Zarr V3 experimental warnings ---
 warnings.filterwarnings("ignore", message=".*<U1*")
@@ -34,13 +33,17 @@ def main():
     # Code to run
     # preprocess_data(config.data, plot_graphs=False)
 
+    # degrade_zarr_store(config.data)
+
     # train_downscale(config.hyperparameters, config.data, config.experiment)
 
-    # inference_over_test_set(config.data, config.experiment)
+    # inference_over_test_set(config.data, config.hyperparameters, config.experiment)
 
     # run_lagrangian_diagnostics(config.data, config.experiment)
 
-    interpolate_zarr_store(config.data.degraded_res, config.data.original_res, config.data.interpolated)
+    # interpolate_zarr_store(config.data, config.hyperparameters)
+
+    print_final_metrics(config.experiment)
 
 
 if __name__ == "__main__":

@@ -3,11 +3,13 @@
 from pathlib import Path
 
 import numpy as np
+import polars as pl
 import torch
+import xarray as xr
 from rich.console import Console
 from rich.syntax import Syntax
 
-from driftnet.config import MasterConfig
+from driftnet.config import DataConfig, MasterConfig
 
 
 class EarlyStopping:
@@ -112,3 +114,81 @@ def meters_to_degrees(u: float, v: float, lat: float) -> tuple[float, float]:
     dlon_dt = (u / (EARTH_RADIUS * cos_lat)) * (180.0 / np.pi)
     dlat_dt = (v / EARTH_RADIUS) * (180.0 / np.pi)
     return dlon_dt, dlat_dt
+
+
+def get_spatial_trim_slices(nx: int, ny: int, n: int) -> tuple[slice, slice]:
+    """
+    Calculates standard Python slices to trim the West (x) and Bottom (y) boundaries
+    so the grid dimensions are divisible by the degradation factor, n.
+
+    Returns:
+        tuple: (y_slice, x_slice)
+    """
+    x_remainder = nx % n
+    y_remainder = ny % n
+
+    # If remainder is > 0, start slicing from the remainder index. Otherwise, start from 0 (None).
+    x_slice = slice(x_remainder if x_remainder != 0 else None, None)
+    y_slice = slice(y_remainder if y_remainder != 0 else None, None)
+
+    return y_slice, x_slice
+
+
+def _get_valid_spatial_slices(data_config: DataConfig):
+    ds_orig_lazy = xr.open_zarr(data_config.original_res)
+    nx, ny = ds_orig_lazy.sizes["x"], ds_orig_lazy.sizes["y"]
+    y_slice, x_slice = get_spatial_trim_slices(nx, ny, data_config.degrade_factor)
+    return x_slice, y_slice
+
+
+def extract_trajectories(ds_path: Path) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """
+    Extracts lists of 1D lon and lat arrays for each particle trajectory.
+    Automatically filters out NaNs caused by out-of-bounds deletion.
+    """
+    # Since your data is backed by Dask, calling .values loads it into memory once,
+    # making individual row access significantly faster than repeated indexing.
+
+    ds = xr.open_zarr(ds_path)
+    lons_all = ds["lon"].values
+    lats_all = ds["lat"].values
+
+    lons_list: list[np.ndarray] = []
+    lats_list: list[np.ndarray] = []
+
+    # Loop over the number of particles (trajectory dimension)
+    for i in range(ds.sizes["trajectory"]):
+        lon_p = lons_all[i, :]
+        lat_p = lats_all[i, :]
+
+        # Filter out NaNs from out-of-bounds deletions
+        valid_mask = ~np.isnan(lon_p) & ~np.isnan(lat_p)
+
+        # Only keep the track if it has at least some valid points
+        if np.any(valid_mask):
+            lons_list.append(lon_p[valid_mask])
+            lats_list.append(lat_p[valid_mask])
+
+    return lons_list, lats_list
+
+
+def append_mean_row(agg_df: pl.DataFrame, time_col: str = "time") -> pl.DataFrame:
+    """
+    Calculates the mean of all numeric columns and appends it as a final row.
+    Casts the time column to a string to insert an 'Average' label.
+    """
+    # 1. Calculate the mean for all columns EXCEPT the time column
+    mean_row = agg_df.select(pl.exclude(time_col)).mean()
+
+    # 2. Add the time column back to this single row with the label "Average"
+    mean_row = mean_row.with_columns(pl.lit("Average").alias(time_col))
+
+    # 3. Reorder the columns to match the original dataframe exactly
+    mean_row = mean_row.select(agg_df.columns)
+
+    # 4. Cast the original dataframe's time column to String so the types match
+    # (Using pl.String for modern Polars, or pl.Utf8 if on an older version)
+    agg_df_str = agg_df.with_columns(pl.col(time_col).cast(pl.String))
+
+    # 5. Append the row to the bottom
+    return pl.concat([agg_df_str, mean_row])

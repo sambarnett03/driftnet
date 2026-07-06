@@ -76,7 +76,7 @@ def validate_one_epoch(
             Y_micro = Y_chunk[i : i + micro_batch_size].to(device, non_blocking=True)
 
             # (Optional but recommended) channels_last format for validation too!
-            X_micro = X_micro.to(memory_format=torch.channels_last)
+            # X_micro = X_micro.to(memory_format=torch.channels_last)
 
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 predictions = model(X_micro)
@@ -99,7 +99,7 @@ def train_model(
     device: torch.device,
 ) -> tuple[nn.Module, dict[str, list[float]]]:
 
-    save_dir = exp_config.base_path
+    save_dir = exp_config.base_path / "model_data"
 
     history = {"train_loss": [], "val_loss": []}
     temp_checkpoint = save_dir / "temp" / "weights.pth"

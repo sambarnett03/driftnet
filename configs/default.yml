@@ -16,7 +16,7 @@ data:
 
   degraded_res:
     dir: "/gws/ssde/j25b/oxford_es/sbarnett/driftnet/images/degraded"
-    factor: 2
+    factor: 5
 
   # Renamed from linear_interp to interpolated to match the Python dataclass
   interpolated:

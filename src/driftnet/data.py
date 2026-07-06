@@ -2,10 +2,14 @@ from pathlib import Path
 
 import dask.array as da
 import numpy as np
+import torch
+import torch.nn.functional as F
 import xarray as xr
 from numpy.typing import NDArray
-import torch.nn.functional as F
-import torch
+
+from driftnet.config import DataConfig, HyperparametersConfig
+from driftnet.ml.dataset import _read_indices_from_csv
+from driftnet.utils import get_spatial_trim_slices
 
 # ==========================================
 # General utility functions
@@ -130,6 +134,8 @@ def preprocess_folder(nc_dir: Path | str, zarr_store: Path | str) -> None:
     # Sort files to ensure time is sequential!
     nc_files = sorted(nc_dir.glob("WINDS*.nc"))
 
+    nc_files = nc_files[:120]
+
     for nc_file in nc_files:
         print(f"Processing {nc_file.name} to Zarr...")
         nc_file_to_zarr(nc_file, zarr_store)
@@ -190,15 +196,29 @@ def degrade_velocities(vel_array: np.ndarray, n: int) -> np.ndarray:
         return np.stack((u_coarse, v_coarse), axis=1)  # Keeps batch dimension
 
 
-def degrade_zarr_store(input_zarr: Path | str, n: int, output_zarr: Path | str) -> None:
+def degrade_zarr_store(config: DataConfig) -> None:
     """
     Reads a high-resolution Zarr store in batches, degrades the velocity fields,
-    and writes them to a new low-resolution Zarr store.
+    and writes them to a new low-resolution Zarr store. Data on the West and Bottom
+    boundaries are trimmed to ensure the grid is divisible by the degradation factor.
     """
-    input_zarr = Path(input_zarr)
-    output_zarr = Path(str(output_zarr).replace(".zarr", f"_n{n}.zarr"))
+
+    input_zarr = config.original_res
+    output_zarr = config.degraded_res
+
+    n = config.degrade_factor
+    print(f"Degradation factor: {n}")
 
     ds_in = xr.open_zarr(input_zarr)
+
+    nx = ds_in.sizes["x"]
+    ny = ds_in.sizes["y"]
+
+    nx, ny = ds_in.sizes["x"], ds_in.sizes["y"]
+    y_slice, x_slice = get_spatial_trim_slices(nx, ny, n)
+
+    ds_in = ds_in.isel(x=x_slice, y=y_slice)
+
     num_times = ds_in.sizes["time_counter"]
     chunk_size = 48  # Number of time steps to degrade in memory at once
 
@@ -225,6 +245,7 @@ def degrade_zarr_store(input_zarr: Path | str, n: int, output_zarr: Path | str) 
         print(f"Degrading time steps {start} to {end}...")
 
         # Load batch of times into memory (Shape: batch, 2, y, x)
+        # Note: vel_chunk is now already trimmed on both x and y axes
         vel_chunk = ds_in.velocity.isel(time_counter=slice(start, end)).values
 
         # Degrade entire batch simultaneously
@@ -288,41 +309,45 @@ def _compute_c_grid_divergence(
     return du_dx + dv_dy
 
 
-
-
 # ===============================
 # Linearly Interpolate Zarr
 # ===============================
 
 
 def interpolate_zarr_store(
-    degraded_zarr_path: Path | str,
-    target_resolution_zarr: Path | str,
-    output_zarr_path: Path | str,
-    chunk_size: int = 48
+    data_config: DataConfig,
+    hyper_config: HyperparametersConfig,
 ) -> None:
     """
     Reads a low-resolution (degraded) Zarr store in batches, bilinearly
     interpolates the velocity fields back to the original resolution, and writes
     them to a new Zarr store.
-
-    Parameters:
-    - degraded_zarr_path: Path to the degraded (low-res) Zarr file.
-    - target_resolution_zarr: Path to the original (high-res) Zarr file to get target dimensions.
-    - output_zarr_path: Path where the interpolated Zarr store will be saved.
-    - chunk_size: Number of time steps to process in memory at once.
     """
-    degraded_zarr_path = Path(degraded_zarr_path)
-    target_resolution_zarr = Path(target_resolution_zarr)
-    output_zarr_path = Path(output_zarr_path)
+    degraded_zarr_path = data_config.degraded_res
+    target_resolution_zarr = data_config.original_res
+    output_zarr_path = data_config.interpolated
 
-    # Open both datasets to establish the source data and the target spatial dimensions
+    # Open both datasets lazily (only reads metadata)
     ds_deg = xr.open_zarr(degraded_zarr_path)
     ds_orig = xr.open_zarr(target_resolution_zarr)
 
+    # --- NEW: Trim target dataset to get correct dimensions ---
+    # This is highly efficient; no array data is loaded into memory.
+    nx, ny = ds_orig.sizes["x"], ds_orig.sizes["y"]
+    y_slice, x_slice = get_spatial_trim_slices(nx, ny, data_config.degrade_factor)
+
+    ds_orig_trimmed = ds_orig.isel(x=x_slice, y=y_slice)
+
+    # Extract target (y, x) shape directly from the lazy trimmed dataset
+    target_shape = (ds_orig_trimmed.sizes["y"], ds_orig_trimmed.sizes["x"])
+    # ----------------------------------------------------------
+
+    # Only run interpolation on test indices
+    csv_path = data_config.splits / "test_indices.csv"
+    test_indices = _read_indices_from_csv(csv_path)
+    ds_deg = ds_deg.isel(time_counter=test_indices)
+
     num_times = ds_deg.sizes["time_counter"]
-    # Extract target (y, x) shape directly from the original resolution zarr
-    target_shape = ds_orig.velocity.shape[2:]
 
     # Pre-load the times we have already interpolated (if the target store exists)
     existing_times = None
@@ -332,8 +357,8 @@ def interpolate_zarr_store(
         if "time_counter" in existing_ds:
             existing_times = existing_ds.time_counter.values
 
-    for start in range(0, num_times, chunk_size):
-        end = min(start + chunk_size, num_times)
+    for start in range(0, num_times, hyper_config.batch_size):
+        end = min(start + hyper_config.batch_size, num_times)
 
         # Check the times for this specific batch
         batch_times = ds_deg.time_counter.isel(time_counter=slice(start, end)).values
@@ -354,24 +379,18 @@ def interpolate_zarr_store(
         # Interpolate spatially to the target shape
         # align_corners=True matches the behavior of the Up() block in your U-Net model
         vel_interp = F.interpolate(
-            vel_tensor,
-            size=target_shape,
-            mode="bilinear",
-            align_corners=True
+            vel_tensor, size=target_shape, mode="bilinear", align_corners=True
         ).numpy()
 
         # Format back into an Xarray dataset
         ds_out = xr.Dataset(
             data_vars=dict(velocity=(["time_counter", "component", "y", "x"], vel_interp)),
-            coords=dict(
-                time_counter=batch_times,
-                component=ds_deg.component.values
-            ),
+            coords=dict(time_counter=batch_times, component=ds_deg.component.values),
         )
 
         # Re-chunk data to match standard format
         ds_out_chunked = ds_out.chunk(
-            {"time_counter": chunk_size, "component": 2, "y": -1, "x": -1}
+            {"time_counter": hyper_config.batch_size, "component": 2, "y": -1, "x": -1}
         )
 
         # Save or append to the target Zarr store

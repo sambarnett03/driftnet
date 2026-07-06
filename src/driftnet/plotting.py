@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -12,10 +12,12 @@ from cartopy.mpl.geoaxes import GeoAxes
 from matplotlib.axes import Axes
 from matplotlib.collections import QuadMesh
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 from matplotlib.quiver import Quiver
 from numpy.typing import ArrayLike, NDArray
 
-from driftnet.data import degrade_coords
+from driftnet.config import DataConfig, ExperimentConfig
+from driftnet.utils import _get_valid_spatial_slices, extract_trajectories
 
 Bounds = tuple[float, float, float, float]
 BoundsLike = Sequence[float]
@@ -23,13 +25,14 @@ CornerPoint = tuple[float, float]
 CornerPoints = Sequence[CornerPoint]
 Corners = BoundsLike | CornerPoints
 
+
 def _parse_corners(corners: Corners | None | str) -> Bounds | None | str:
     """Return lon/lat bounds from either bounds or four corner points."""
     if corners is None:
         return None
 
-    if corners == 'auto':
-        return 'auto'
+    if corners == "auto":
+        return "auto"
 
     corners_array = np.asarray(corners, dtype=float)
 
@@ -53,6 +56,7 @@ def _parse_corners(corners: Corners | None | str) -> Bounds | None | str:
         "[(lon1, lat1), ..., (lon4, lat4)]."
     )
 
+
 def _get_extent(
     lon: NDArray[np.floating],
     lat: NDArray[np.floating],
@@ -62,7 +66,7 @@ def _get_extent(
     """Return plot extent, using corners if supplied. Returns None for full map."""
     corner_bounds = _parse_corners(corners)
 
-    if corner_bounds == 'auto':
+    if corner_bounds == "auto":
         return (
             float(np.nanmin(lon) - padding),
             float(np.nanmax(lon) + padding),
@@ -98,9 +102,7 @@ def _clip_to_extent(
 
 
 def _block_average_2d(
-    arr: NDArray[np.floating],
-    row_stride: int,
-    col_stride: int
+    arr: NDArray[np.floating], row_stride: int, col_stride: int
 ) -> NDArray[np.floating]:
     """Helper to block-average a single 2D array with independent row/col strides."""
     if row_stride <= 1 and col_stride <= 1:
@@ -112,10 +114,7 @@ def _block_average_2d(
     arr_trunc = arr[:h_trunc, :w_trunc]
 
     return arr_trunc.reshape(
-        h_trunc // row_stride,
-        row_stride,
-        w_trunc // col_stride,
-        col_stride
+        h_trunc // row_stride, row_stride, w_trunc // col_stride, col_stride
     ).mean(axis=(1, 3))
 
 
@@ -349,7 +348,7 @@ def plot_velocity_quiver(
 def plot_cgrid_subset(
     coord_data: dict[str, Any],
     i_range: tuple[int, int] = (0, 10),
-    j_range: tuple[int, int] = (0, 10)
+    j_range: tuple[int, int] = (0, 10),
 ) -> None:
     """
     Plots a subset of the C-grid data.
@@ -450,7 +449,9 @@ def plot_velocity_heatmap(
         )
 
         # Optional: Add gridlines
-        gl = geo_ax.gridlines(draw_labels=True, linewidth=0.5, color="gray", alpha=0.5, linestyle="--")
+        gl = geo_ax.gridlines(
+            draw_labels=True, linewidth=0.5, color="gray", alpha=0.5, linestyle="--"
+        )
         gl.top_labels = False
         gl.right_labels = False
     else:
@@ -466,7 +467,7 @@ def plot_velocity_heatmap(
 
 
 def _normalize_trajectories(
-    data: NDArray[np.floating] | Sequence[NDArray[np.floating]] | None
+    data: NDArray[np.floating] | Sequence[NDArray[np.floating]] | None,
 ) -> list[NDArray[np.floating]]:
     """Helper to safely convert varying inputs into a strict list of 1D arrays."""
     if data is None:
@@ -476,180 +477,156 @@ def _normalize_trajectories(
     return list(data)
 
 
-def plot_side_by_side_trajectories(
-    ds_gt: xr.Dataset,
-    ds_pred: xr.Dataset,
-    grid_coords_path: Path | str,
-    lons_gt: NDArray[np.floating] | Sequence[NDArray[np.floating]],
-    lats_gt: NDArray[np.floating] | Sequence[NDArray[np.floating]],
-    lons_pred: NDArray[np.floating] | Sequence[NDArray[np.floating]],
-    lats_pred: NDArray[np.floating] | Sequence[NDArray[np.floating]],
-    ds_interp: xr.Dataset | None = None,
-    lons_interp: NDArray[np.floating] | Sequence[NDArray[np.floating]] | None = None,
-    lats_interp: NDArray[np.floating] | Sequence[NDArray[np.floating]] | None = None,
-    time_index: int = 0,
-    corners: Corners | None | str = None,
-    padding: float = 2.0,
-    save_name: str = 'test.png'
-) -> None:
+def _style_map_axis(ax: GeoAxes, extent: Sequence[float] | None = None) -> None:
     """
-    Plots GT, Predicted, and optionally Interpolated trajectories side-by-side.
+    Applies standard Cartopy geographic styling and bounds to an axis.
     """
-    # Load base coordinates
-    grid_data = np.load(grid_coords_path)
-    base_lon = grid_data['rho_lon']
-    base_lat = grid_data['rho_lat']
-    base_h, base_w = base_lon.shape
+    if extent is not None:
+        ax.set_extent(extent, crs=ccrs.PlateCarree())
 
-    # Helper function to extract and downsample a dataset
-    def _prepare_ds(ds: xr.Dataset):
-        u = ds['velocity'].isel(component=0, time_counter=time_index).values
-        v = ds['velocity'].isel(component=1, time_counter=time_index).values
-        mag = np.sqrt(u**2 + v**2)
+    ax.add_feature(cfeature.LAND, facecolor="lightgray", zorder=2)
+    ax.add_feature(cfeature.COASTLINE, linewidth=0.5, zorder=2)
 
-        h, w = mag.shape
-        res_lat = max(1, base_h // h)
-        res_lon = max(1, base_w // w)
-
-        lon_d = _block_average_2d(base_lon, res_lat, res_lon)
-        lat_d = _block_average_2d(base_lat, res_lat, res_lon)
-        return mag, lon_d, lat_d
-
-    # Prepare datasets
-    mag_gt, lon_gt, lat_gt = _prepare_ds(ds_gt)
-    mag_pred, lon_pred, lat_pred = _prepare_ds(ds_pred)
-
-    # Initialize interpolation variables so they are always bound
-    mag_interp = lon_interp = lat_interp = None
-    if ds_interp is not None:
-        mag_interp, lon_interp, lat_interp = _prepare_ds(ds_interp)
-
-    # Normalize trajectory inputs to strict lists (now guaranteed to never be None)
-    _lons_gt = _normalize_trajectories(lons_gt)
-    _lats_gt = _normalize_trajectories(lats_gt)
-    _lons_pred = _normalize_trajectories(lons_pred)
-    _lats_pred = _normalize_trajectories(lats_pred)
-    _lons_interp = _normalize_trajectories(lons_interp)
-    _lats_interp = _normalize_trajectories(lats_interp)
-
-    # --- CALCULATE MAP EXTENT ---
-    # Safe list addition, even if _lons_interp is an empty list []
-    all_lons = _lons_gt + _lons_pred + _lons_interp
-    all_lats = _lats_gt + _lats_pred + _lats_interp
-
-    extent = _get_extent(np.concatenate(all_lons), np.concatenate(all_lats), corners=corners, padding=padding)
-
-    # Dynamically scale width based on number of panels
-    has_interp = ds_interp is not None and len(_lons_interp) > 0 and len(_lats_interp) > 0
-    num_panels = 3 if has_interp else 2
-
-    fig, axes_raw = plt.subplots(1, num_panels, figsize=(8 * num_panels, 8), subplot_kw={"projection": ccrs.PlateCarree()})
-    axes = [cast(GeoAxes, ax) for ax in (axes_raw if num_panels > 1 else [axes_raw])]
-
-    # Apply common styling
-    for ax in axes:
-        if extent is not None:
-            ax.set_extent(extent, crs=ccrs.PlateCarree())
-        ax.add_feature(cfeature.LAND, facecolor="lightgray", zorder=2)
-        ax.add_feature(cfeature.COASTLINE, linewidth=0.5, zorder=2)
-        gl = ax.gridlines(draw_labels=True, linestyle="--", alpha=0.5)
-        gl.top_labels = False
-        gl.right_labels = False
-
-    # --- Panel 1: Ground Truth ---
-    ax0 = axes[0]
-    ax0.set_title("Ground Truth")
-    pcm = ax0.pcolormesh(lon_gt, lat_gt, mag_gt, transform=ccrs.PlateCarree(), cmap="viridis", shading="auto")
-    for i, (lons, lats) in enumerate(zip(_lons_gt, _lats_gt)):
-        ax0.plot(lons, lats, transform=ccrs.PlateCarree(), color="white", linewidth=2, label="Track" if i == 0 else None, zorder=3)
-        ax0.scatter(lons[0], lats[0], color="green", marker="o", transform=ccrs.PlateCarree(), zorder=4)
-        ax0.scatter(lons[-1], lats[-1], color="red", marker="X", transform=ccrs.PlateCarree(), zorder=4)
-    ax0.legend(loc="upper right")
-
-    # --- Panel 2: ML Prediction ---
-    ax1 = axes[1]
-    ax1.set_title("ML Predicted")
-    ax1.pcolormesh(lon_pred, lat_pred, mag_pred, transform=ccrs.PlateCarree(), cmap="viridis", shading="auto")
-    for i, (lons, lats) in enumerate(zip(_lons_pred, _lats_pred)):
-        ax1.plot(lons, lats, transform=ccrs.PlateCarree(), color="white", linewidth=2, label="Track" if i == 0 else None, zorder=3)
-        ax1.scatter(lons[0], lats[0], color="green", marker="o", transform=ccrs.PlateCarree(), zorder=4)
-        ax1.scatter(lons[-1], lats[-1], color="red", marker="X", transform=ccrs.PlateCarree(), zorder=4)
-    ax1.legend(loc="upper right")
-
-    # --- Panel 3: Interpolated (Optional) ---
-    if has_interp and lon_interp is not None and lat_interp is not None and mag_interp is not None:
-        ax2 = axes[2]
-        ax2.set_title("Bilinear Interpolation")
-        ax2.pcolormesh(lon_interp, lat_interp, mag_interp, transform=ccrs.PlateCarree(), cmap="viridis", shading="auto")
-        for i, (lons, lats) in enumerate(zip(_lons_interp, _lats_interp)):
-            ax2.plot(lons, lats, transform=ccrs.PlateCarree(), color="white", linewidth=2, label="Track" if i == 0 else None, zorder=3)
-            ax2.scatter(lons[0], lats[0], color="green", marker="o", transform=ccrs.PlateCarree(), zorder=4)
-            ax2.scatter(lons[-1], lats[-1], color="red", marker="X", transform=ccrs.PlateCarree(), zorder=4)
-        ax2.legend(loc="upper right")
-
-    cbar = fig.colorbar(pcm, ax=axes_raw, orientation="horizontal", fraction=0.05, pad=0.1)
-    cbar.set_label("Velocity Magnitude (m/s)")
-
-    output_dir = Path('images')
-    output_dir.mkdir(parents=True, exist_ok=True)
-    plt.savefig(output_dir / save_name, bbox_inches="tight")
-    plt.close(fig)
-
-
-def plot_overlapping_trajectories_on_neutral_map(
-    lons_gt: NDArray[np.floating],
-    lats_gt: NDArray[np.floating],
-    lons_pred: NDArray[np.floating],
-    lats_pred: NDArray[np.floating],
-    extent: Bounds,
-) -> None:
-    """
-    Plots both sets of trajectories on a single map without a confusing velocity background.
-    extent: [min_lon, max_lon, min_lat, max_lat]
-    """
-    fig, ax_raw = plt.subplots(figsize=(10, 10), subplot_kw={"projection": ccrs.PlateCarree()})
-    ax = cast(GeoAxes, ax_raw)
-
-    ax.set_extent(extent, crs=ccrs.PlateCarree())
-    ax.add_feature(cfeature.OCEAN, facecolor="azure")
-    ax.add_feature(cfeature.LAND, facecolor="tan", edgecolor="black", zorder=2)
-
-    gl = ax.gridlines(draw_labels=True, linestyle=":", alpha=0.7)
+    gl = ax.gridlines(draw_labels=True, linestyle="--", alpha=0.5)
     gl.top_labels = False
     gl.right_labels = False
 
-    # Plot Tracks
-    ax.plot(
-        lons_gt,
-        lats_gt,
-        transform=ccrs.PlateCarree(),
-        color="black",
-        linewidth=2.5,
-        label="Ground Truth",
-    )
-    ax.plot(
-        lons_pred,
-        lats_pred,
-        transform=ccrs.PlateCarree(),
-        color="red",
-        linestyle="--",
-        linewidth=2.5,
-        label="ML Predicted",
+
+def _plot_single_panel(
+    ax: GeoAxes, title: str, track_lons: Sequence[np.ndarray], track_lats: Sequence[np.ndarray]
+):
+    """
+    Plots the background velocity field and overlays particle trajectories.
+    """
+    ax.set_title(title)
+
+    # Plot trajectories
+    for i, (lons, lats) in enumerate(zip(track_lons, track_lats, strict=False)):
+        ax.plot(
+            lons,
+            lats,
+            transform=ccrs.PlateCarree(),
+            color="black",
+            linewidth=2,
+            label="Track" if i == 0 else None,
+            zorder=3,
+        )
+        # Start marker
+        ax.scatter(
+            lons[0], lats[0], color="green", marker="o", transform=ccrs.PlateCarree(), zorder=4
+        )
+        # End marker
+        ax.scatter(
+            lons[-1], lats[-1], color="red", marker="X", transform=ccrs.PlateCarree(), zorder=4
+        )
+
+    legend_elements = [
+        Line2D([0], [0], color="b", lw=4, label="Track"),
+        Line2D([0], [0], marker="o", color="green", label="Start"),
+        Line2D([0], [0], marker="X", color="red", label="End"),
+    ]
+
+    ax.legend(handles=legend_elements, loc="upper right")
+
+
+# Define a literal type for static type checking safety
+FieldType = Literal["truth", "predicted", "interpolated"]
+
+
+def plot_lagrangian_trajectories(
+    data_config: DataConfig,
+    exp_config: ExperimentConfig,
+    fields_to_plot: list[FieldType],
+    time_index: int = 0,
+    padding: float = 2.0,
+    save_name: str = "trajectory_comparison.png",
+) -> None:
+    """
+    Dynamically plots a variable number of panels side-by-side matching the requested field strings.
+    """
+    if not fields_to_plot:
+        raise ValueError("The list 'fields_to_plot' cannot be empty.")
+
+    # 1. Load base coordinates and extract spatial slices
+    x_slice, y_slice = _get_valid_spatial_slices(data_config)
+
+    # 2. Define the Field Mapping Registry
+    # (Note: Fixed the 'interpolated' path typo to use data_config.interpolated)
+    field_registry = {
+        "truth": {
+            "ds_path": data_config.original_res,
+            "traj_path": exp_config.metrics / "trajectories_truth.zarr",
+            "title": "Ground Truth",
+            "needs_slice": True,  # Ground truth needs spatial trimming
+        },
+        "predicted": {
+            "ds_path": exp_config.model_predictions,
+            "traj_path": exp_config.metrics / "trajectories_ml.zarr",
+            "title": "ML Predicted",
+            "needs_slice": False,
+        },
+        "interpolated": {
+            "ds_path": data_config.interpolated,
+            "traj_path": exp_config.metrics / "trajectories_interpolated.zarr",
+            "title": "Bilinear Interpolation",
+            "needs_slice": False,
+        },
+    }
+
+    # 3. Process data dynamically for all requested fields
+    all_lons_combined: list[NDArray] = []
+    all_lats_combined: list[NDArray] = []
+    processed_panels_data = []
+
+    for field in fields_to_plot:
+        if field not in field_registry:
+            raise ValueError(f"Unknown field key mapping requested: '{field}'")
+
+        cfg = field_registry[field]
+
+        # Load and potentially slice target dataset
+        ds = xr.open_zarr(cfg["ds_path"])
+        if cfg["needs_slice"]:
+            ds = ds.isel(x=x_slice, y=y_slice)
+
+        # Pull tracking trajectories
+        trajectories = extract_trajectories(cfg["traj_path"])
+        _lons = _normalize_trajectories(trajectories[0])
+        _lats = _normalize_trajectories(trajectories[1])
+
+        # Aggregate tracking points for overall bounding box calculation
+        all_lons_combined.extend(_lons)
+        all_lats_combined.extend(_lats)
+
+        # Buffer dictionary payload for plotting step
+        processed_panels_data.append({"title": cfg["title"], "lons": _lons, "lats": _lats})
+
+    # 4. Global map bounds calculation
+    extent = _get_extent(
+        np.concatenate(all_lons_combined), np.concatenate(all_lats_combined), padding=padding
     )
 
-    # Mark Start point
-    ax.scatter(
-        lons_gt[0],
-        lats_gt[0],
-        color="green",
-        marker="o",
-        s=100,
-        transform=ccrs.PlateCarree(),
-        label="Start Point",
-        zorder=4,
+    # 5. Dynamic Subplot Setup
+    num_panels = len(fields_to_plot)
+    fig, axes_raw = plt.subplots(
+        1, num_panels, figsize=(8 * num_panels, 8), subplot_kw={"projection": ccrs.PlateCarree()}
     )
 
-    ax.set_title("Trajectory Comparison: GT vs ML Prediction")
-    ax.legend(loc="upper right")
+    # Clean array-vs-scalar unpacking for Pyright type checker safety
+    axes = [cast(GeoAxes, axes_raw)] if num_panels == 1 else [cast(GeoAxes, ax) for ax in axes_raw]
 
-    plt.show()
+    # 6. Step through layout allocations and populate panels
+    for i, panel in enumerate(processed_panels_data):
+        ax = axes[i]
+        _style_map_axis(ax, extent)
+        _plot_single_panel(
+            ax=ax, title=panel["title"], track_lons=panel["lons"], track_lats=panel["lats"]
+        )
+
+    output_dir = Path("images") / "trajectories"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    save_path = output_dir / save_name
+    plt.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    print(f"Dynamic trajectory plot saved to {save_path}")

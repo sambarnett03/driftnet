@@ -79,7 +79,7 @@ class Strict2xOceanUNet(nn.Module):
         # Instead of a 1x1 conv, we use a ConvTranspose2d with stride=2.
         # This explicitly doubles the output dimensions: 605x1072 -> 1210x2144.
         self.outc = nn.ConvTranspose2d(
-            in_channels=base_features, out_channels=n_classes, kernel_size=2, stride=2
+            in_channels=base_features, out_channels=n_classes, kernel_size=5, stride=5
         )
 
     def forward(self, x):

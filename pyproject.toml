@@ -27,7 +27,7 @@ dependencies = [
     "netcdf4>=1.6.0",
     "cartopy",
     "matplotlib",
-    "zarr",
+    "zarr<3",
     "dask",
     "torch",
     "rich",

@@ -29,9 +29,13 @@ class ExperimentConfig:
         # 4. Create the necessary directories
         os.makedirs(self.base_path, exist_ok=True)
         os.makedirs(self.base_path / "model_data", exist_ok=True)
+        os.makedirs(self.base_path / "model_data" / "temp", exist_ok=True)
+        os.makedirs(self.base_path / "metrics", exist_ok=True)
+        os.makedirs(self.base_path / "data_splits", exist_ok=True)
 
         self.model_weights = self.base_path / "model_data" / "best_weights.pth"
         self.model_predictions = self.base_path / "predictions.zarr"
+        self.metrics = self.base_path / "metrics"
 
     def __getitem__(self, key):
         return getattr(self, key)
@@ -54,7 +58,7 @@ class OriginalResConfig:
 @dataclass
 class DegradedResConfig:
     dir: str = ""
-    factor: int = 2
+    factor: int = 5
 
     def __post_init__(self):
         # Auto-generate the zarr name based on the factor
@@ -107,12 +111,16 @@ class DataConfig:
         if self.degraded_res is None:
             self.degraded_res = Path()
         elif isinstance(self.degraded_res, dict):
-            self.degraded_res = DegradedResConfig(**self.degraded_res).full_path
+            self.degraded_dict = self.degraded_res
+            self.degraded_res = DegradedResConfig(**self.degraded_dict).full_path
+            self.degrade_factor = DegradedResConfig(**self.degraded_dict).factor
 
         if self.interpolated is None:
             self.interpolated = Path()
         elif isinstance(self.interpolated, dict):
             self.interpolated = InterpolatedConfig(**self.interpolated).full_path
+
+        self.splits = self.original_res.parent.parent / "data_splits"
 
     def __getitem__(self, key):
         return getattr(self, key)
@@ -127,6 +135,9 @@ class HyperparametersConfig:
 
     def __getitem__(self, key):
         return getattr(self, key)
+
+    def __post_init__(self):
+        self.learning_rate = float(self.learning_rate)
 
 
 @dataclass

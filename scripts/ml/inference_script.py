@@ -57,7 +57,7 @@ def inference_over_test_set(
             ds_batch = ds_batch.chunk({"time_counter": 48, "component": -1, "y": -1, "x": -1})
             ds_batch.to_zarr(output_zarr_path, mode="w")  # type: ignore
         else:
-            ds_batch.to_zarr(output_zarr_path, append_dim="time_counter")
+            ds_batch.to_zarr(output_zarr_path, append_dim="time_counter") # type: ignore
 
     # 3. Final calculations
     avg_test_loss = total_loss / num_batches

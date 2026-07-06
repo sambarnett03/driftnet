@@ -119,9 +119,9 @@ def nc_file_to_zarr(fname: Path, zarr_store: Path) -> None:
         ds_chunked = ds_out.chunk({"time_counter": 48, "component": 2, "y": -1, "x": -1})
 
         if not zarr_store.exists():
-            ds_chunked.to_zarr(zarr_store, mode="w") # type: ignore
+            ds_chunked.to_zarr(zarr_store, mode="w")  # type: ignore
         else:
-            ds_chunked.to_zarr(zarr_store, append_dim="time_counter") # type: ignore
+            ds_chunked.to_zarr(zarr_store, append_dim="time_counter")  # type: ignore
 
 
 def preprocess_folder(nc_dir: Path | str, zarr_store: Path | str) -> None:
@@ -262,9 +262,9 @@ def degrade_zarr_store(config: DataConfig) -> None:
         )
 
         if not output_zarr.exists():
-            ds_out_chunked.to_zarr(output_zarr, mode="w") # type: ignore
+            ds_out_chunked.to_zarr(output_zarr, mode="w")  # type: ignore
         else:
-            ds_out_chunked.to_zarr(output_zarr, append_dim="time_counter") # type: ignore
+            ds_out_chunked.to_zarr(output_zarr, append_dim="time_counter")  # type: ignore
 
 
 def _compute_c_grid_divergence(
@@ -395,8 +395,8 @@ def interpolate_zarr_store(
 
         # Save or append to the target Zarr store
         if not output_zarr_path.exists():
-            ds_out_chunked.to_zarr(output_zarr_path, mode="w") # type: ignore
+            ds_out_chunked.to_zarr(output_zarr_path, mode="w")  # type: ignore
         else:
-            ds_out_chunked.to_zarr(output_zarr_path, append_dim="time_counter") # type: ignore
+            ds_out_chunked.to_zarr(output_zarr_path, append_dim="time_counter")  # type: ignore
 
     print(f"Interpolation complete. Output saved to {output_zarr_path}")

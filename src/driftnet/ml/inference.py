@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
-from driftnet.ml.models import Strict2xOceanUNet
+from driftnet.ml.models import Strict5xOceanUNet
 
 
 @torch.inference_mode()
@@ -25,7 +25,7 @@ def stream_inference(
     print(f"Running inference on device: {device}")
 
     # Reconstruct and compile the model structure
-    model = Strict2xOceanUNet(n_channels=2, n_classes=2, base_features=32)
+    model = Strict5xOceanUNet(n_channels=2, n_classes=2, base_features=32)
     model = model.to(device)
 
     print("Compiling model for inference optimization...")

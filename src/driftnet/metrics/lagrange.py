@@ -24,7 +24,7 @@ def haversine_distance(
     return km
 
 
-def DeleteOutOfBounds(particle):
+def DeleteOutOfBounds(particle, fieldset, time):
     """OceanParcels V3 Kernel to delete particles that hit land or go out of bounds."""
     if particle.state >= 50:
         particle.delete()
@@ -204,7 +204,7 @@ def _setup_test_particles(data_config: DataConfig, test_times: NDArray):
     y_idx, x_idx = np.where(valid_mask)
 
     # Subsample to track ~100 particles uniformly across the domain
-    step = max(1, len(y_idx) // 1)
+    step = max(1, len(y_idx) // 10)
 
     # Release the particles at the correctly trimmed rho (cell center) locations
     start_lons = rho_lon[y_idx[::step], x_idx[::step]]
@@ -298,7 +298,9 @@ def get_connectivity_metrics(exp_config: ExperimentConfig) -> tuple[pl.DataFrame
     return df_compare, agg_df
 
 
-def plot_connectivity_results(agg_df: pl.DataFrame, folder_name: str | Path):
+def plot_connectivity_results(
+    agg_df: pl.DataFrame, folder_name: str | Path, file_name: str = "lagrangian_divergence_metrics"
+):
 
     time_hours = (agg_df["time"] - agg_df["time"][0]).dt.total_minutes() / 60.0
 
@@ -319,6 +321,6 @@ def plot_connectivity_results(agg_df: pl.DataFrame, folder_name: str | Path):
     plt.grid(True, linestyle=":", alpha=0.7)
 
     Path(f"images/{folder_name}").mkdir(parents=True, exist_ok=True)
-    plot_path = f"images/{folder_name}/lagrangian_divergence_metrics.png"
+    plot_path = f"images/{folder_name}/{file_name}.png"
     plt.savefig(plot_path, bbox_inches="tight", dpi=300)
     print(f"Metrics plot successfully saved to {plot_path}")

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import polars as pl
 
@@ -12,7 +14,7 @@ from driftnet.metrics.lagrange import (
     run_parcels_simulation,
 )
 from driftnet.metrics.mse import calculate_velocity_mse
-from driftnet.plotting import plot_lagrangian_trajectories
+from driftnet.plotting import plot_lagrangian_trajectories, plot_speed_heatmaps
 
 
 def compute_trajectories(
@@ -57,7 +59,7 @@ def save_metrics(data_config: DataConfig, exp_config: ExperimentConfig, _plot=Fa
     calculate_velocity_mse(data_config, exp_config)
 
     if _plot is True:
-        folder_name = exp_config.exp_name
+        folder_name = Path(exp_config.exp_name) / exp_config.trial_name
         plot_connectivity_results(df_agg, folder_name)
         plot_ftle_results(lyap_agg, folder_name)
 
@@ -92,6 +94,13 @@ def print_final_metrics(exp_config):
 
 
 def evaluate_predictions(data_config: DataConfig, exp_config: ExperimentConfig):
-    compute_trajectories(data_config, exp_config)
+    # compute_trajectories(data_config, exp_config)
     save_metrics(data_config, exp_config, _plot=True)
     print_final_metrics(exp_config)
+    plot_speed_heatmaps(
+        data_config,
+        exp_config,
+        ["truth", "degraded", "predicted", "interpolated"],
+        Path(exp_config.exp_name) / exp_config.trial_name,
+        corners=[40.0, 42.5, -20.0, -17.5],
+    )

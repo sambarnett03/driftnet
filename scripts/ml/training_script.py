@@ -6,7 +6,7 @@ from driftnet.config import DataConfig, ExperimentConfig, HyperparametersConfig
 
 # Import your reusable building block from your source code
 from driftnet.ml.dataset import get_train_val_test_datasets
-from driftnet.ml.models import Strict2xOceanUNet
+from driftnet.ml.models import Strict5xOceanUNet
 from driftnet.ml.train import train_model
 
 
@@ -33,7 +33,7 @@ def train_downscale(
     )
 
     # --- 3. Initialize Model, Loss, Optimizer ---
-    model = Strict2xOceanUNet(n_channels=2, n_classes=2, base_features=32)
+    model = Strict5xOceanUNet(n_channels=2, n_classes=2, base_features=32)
     model = model.to(device)
 
     print("Compiling model for A100 architecture optimization...")

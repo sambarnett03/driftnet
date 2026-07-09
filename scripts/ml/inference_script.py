@@ -50,7 +50,7 @@ def inference_over_test_set(
         # 2. Write or Append to Zarr
         if num_batches == 1:
             ds_batch.attrs = {
-                "description": "2x Strict Ocean Super-Resolution U-Net Predictions",
+                "description": "5x Strict Ocean Super-Resolution U-Net Predictions",
                 "checkpoint_used": str(exp_config.model_weights),
             }
             # Chunk along the new dimension names

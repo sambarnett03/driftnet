@@ -53,11 +53,11 @@ class Up(nn.Module):
         return self.conv(x)
 
 
-class Strict2xOceanUNet(nn.Module):
+class Strict5xOceanUNet(nn.Module):
     def __init__(self, n_channels=2, n_classes=2, base_features=16):
         """
         A U-Net designed to extract features at the low resolution (605x1072)
-        and explicitly upsample by exactly 2x (1210x2144) at the very end.
+        and explicitly upsample by exactly 5x at the very end using PixelShuffle.
         """
         super().__init__()
         self.n_channels = n_channels
@@ -76,16 +76,17 @@ class Strict2xOceanUNet(nn.Module):
         self.up4 = Up(base_features * 2 + base_features, base_features)
 
         # --- Super Resolution Head ---
-        # Instead of a 1x1 conv, we use a ConvTranspose2d with stride=2.
-        # This explicitly doubles the output dimensions: 605x1072 -> 1210x2144.
-        self.outc = nn.ConvTranspose2d(
-            in_channels=base_features, out_channels=n_classes, kernel_size=5, stride=5
-        )
+        # Replaced ConvTranspose2d with PixelShuffle for a clean 5x upscale
+        upscale_factor = 5
+        mid_features = n_classes * (upscale_factor**2)  # 2 * 25 = 50 channels
+
+        self.pre_shuffle = nn.Conv2d(base_features, mid_features, kernel_size=3, padding=1)
+        self.pixel_shuffle = nn.PixelShuffle(upscale_factor)
 
     def forward(self, x):
         """
         Expects Input x: [B, 2, 605, 1072]
-        Returns Output:  [B, 2, 1210, 2144]
+        Returns Output:  [B, 2, 3025, 5360]
         """
         # Encode
         x1 = self.inc(x)
@@ -100,7 +101,8 @@ class Strict2xOceanUNet(nn.Module):
         x = self.up3(x, x2)
         x = self.up4(x, x1)
 
-        # Final 2x Upscale
-        out = self.outc(x)
+        # Final 5x Upscale
+        x = self.pre_shuffle(x)
+        out = self.pixel_shuffle(x)
 
         return out

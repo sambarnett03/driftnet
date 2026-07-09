@@ -8,7 +8,7 @@ import yaml
 @dataclass
 class ExperimentConfig:
     exp_name: str | Path = ""
-    trial_name: str | Path = ""
+    trial_name: str | Path = "baseline_trial"
     base: str = ""
 
     def __post_init__(self):
@@ -20,8 +20,8 @@ class ExperimentConfig:
             )
 
         # 2. Apply defaults if names are blank
-        self.exp_name = Path(self.exp_name) or "default_experiment"
-        self.trial_name = Path(self.trial_name) or "baseline_trial"
+        self.exp_name = self.exp_name or "default_experiment"
+        self.trial_name = self.trial_name or "baseline_trial"
 
         # 3. Resolve the full path
         self.base_path = Path(self.base) / self.exp_name / self.trial_name

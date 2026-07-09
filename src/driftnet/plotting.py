@@ -1,12 +1,14 @@
+import os
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, cast, get_args
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
+import polars as pl
 import xarray as xr
 from cartopy.mpl.geoaxes import GeoAxes
 from matplotlib.axes import Axes
@@ -17,6 +19,7 @@ from matplotlib.quiver import Quiver
 from numpy.typing import ArrayLike, NDArray
 
 from driftnet.config import DataConfig, ExperimentConfig
+from driftnet.generated_types import ExperimentPathType
 from driftnet.utils import _get_valid_spatial_slices, extract_trajectories
 
 Bounds = tuple[float, float, float, float]
@@ -24,6 +27,7 @@ BoundsLike = Sequence[float]
 CornerPoint = tuple[float, float]
 CornerPoints = Sequence[CornerPoint]
 Corners = BoundsLike | CornerPoints
+MetricType = Literal["euler_distance", "ftle", "velocity_mse"]
 
 
 def _parse_corners(corners: Corners | None | str) -> Bounds | None | str:
@@ -382,8 +386,7 @@ def plot_cgrid_subset(
 
 def plot_velocity_heatmap(
     ax: GeoAxes | Axes,
-    lon: NDArray[np.floating],
-    lat: NDArray[np.floating],
+    grid_coords_path: Path,
     vel: NDArray[np.floating],
     add_map_features: bool = True,
     cmap: str = "RdBu_r",
@@ -410,6 +413,10 @@ def plot_velocity_heatmap(
 
     if corners is None:
         corners = [40.0, 42.5, -20.0, -17.5]
+
+    grid = np.load(grid_coords_path)
+    lat = grid["rho_lat"]
+    lon = grid["rho_lon"]
 
     # Resolution matching
     nlat, nlon = vel.shape
@@ -530,7 +537,7 @@ def _plot_single_panel(
 
 
 # Define a literal type for static type checking safety
-FieldType = Literal["truth", "predicted", "interpolated"]
+FieldType = Literal["truth", "predicted", "interpolated", "degraded"]
 
 
 def plot_lagrangian_trajectories(
@@ -629,3 +636,271 @@ def plot_lagrangian_trajectories(
     plt.savefig(save_path, bbox_inches="tight", dpi=300)
     plt.close(fig)
     print(f"Dynamic trajectory plot saved to {save_path}")
+
+
+def plot_speed_heatmaps(
+    data_config: DataConfig,
+    exp_config: ExperimentConfig,
+    fields_to_plot: list[FieldType],
+    folder_name: str | Path,
+    time_idx: int = 0,
+    corners: Any = None,
+    padding: float = 2.0,
+) -> None:
+    """
+    Dynamically plots a variable number of speed heatmap panels side-by-side.
+    If exactly 4 fields are provided, they are plotted in a 2x2 grid layout.
+    """
+    if not fields_to_plot:
+        raise ValueError("The list 'fields_to_plot' cannot be empty.")
+
+    # Get datetime corresponding to time_idx
+    times = xr.open_zarr(exp_config.model_predictions).time_counter.values
+    datetime_str = times[time_idx]
+
+    # 1. Load base coordinates and extract spatial slices
+    x_slice, y_slice = _get_valid_spatial_slices(data_config)
+    base_lons = np.load(data_config.grid_params)["rho_lon"][y_slice, x_slice]
+    base_lats = np.load(data_config.grid_params)["rho_lat"][y_slice, x_slice]
+
+    # 2. Define the Field Mapping Registry
+    field_registry = {
+        "truth": {
+            "ds_path": data_config.original_res,
+            "title": "Ground Truth",
+            "needs_slice": True,
+        },
+        "predicted": {
+            "ds_path": exp_config.model_predictions,
+            "title": "ML Predicted",
+            "needs_slice": False,
+        },
+        "interpolated": {
+            "ds_path": data_config.interpolated,
+            "title": "Bilinear Interpolation",
+            "needs_slice": False,
+        },
+        "degraded": {
+            "ds_path": data_config.degraded_res,
+            "title": "Degraded Resolution",
+            "needs_slice": False,
+        },
+    }
+
+    # 3. Process data dynamically for all requested fields
+    all_lons_combined: list[np.ndarray] = []
+    all_lats_combined: list[np.ndarray] = []
+    processed_panels_data = []
+
+    global_vmin = float("inf")
+    global_vmax = float("-inf")
+
+    for field in fields_to_plot:
+        if field not in field_registry:
+            raise ValueError(f"Unknown field key mapping requested: '{field}'")
+
+        cfg = field_registry[field]
+
+        # Load and potentially slice target dataset
+        ds = xr.open_zarr(cfg["ds_path"])
+        if cfg["needs_slice"]:
+            ds = ds.isel(x=x_slice, y=y_slice)
+
+        # Isolate the specific time step for the heatmap
+        ds = ds.sel({"time_counter": datetime_str})
+
+        # Extract U and V to calculate scalar speed
+        u = ds["velocity"].isel(component=0)
+        v = ds["velocity"].isel(component=1)
+
+        speed = ((u**2 + v**2) ** 0.5).values
+
+        plot_lons = base_lons
+        plot_lats = base_lats
+
+        if field == "degraded":
+            plot_lats = _block_average_2d(
+                base_lats, data_config.degrade_factor, data_config.degrade_factor
+            )
+            plot_lons = _block_average_2d(
+                base_lons, data_config.degrade_factor, data_config.degrade_factor
+            )
+
+        # Aggregate tracking points for overall bounding box calculation
+        all_lons_combined.extend(plot_lons.flatten())
+        all_lats_combined.extend(plot_lats.flatten())
+
+        # Track global min/max for a shared colorbar
+        global_vmin = min(global_vmin, np.nanmin(speed))
+        global_vmax = max(global_vmax, np.nanmax(speed))
+
+        # Buffer dictionary payload for plotting step
+        processed_panels_data.append(
+            {"title": cfg["title"], "lons": plot_lons, "lats": plot_lats, "speed": speed}
+        )
+
+    # 4. Global map bounds calculation
+    extent = _get_extent(
+        np.concatenate([np.array(all_lons_combined)]),
+        np.concatenate([np.array(all_lats_combined)]),
+        padding=padding,
+        corners=corners,
+    )
+
+    # 5. Dynamic Subplot Setup (Handles 2x2 grid if 4 items are provided)
+    num_panels = len(fields_to_plot)
+    if num_panels == 4:
+        nrows, ncols = 2, 2
+        figsize = (16, 16)
+    else:
+        nrows, ncols = 1, num_panels
+        figsize = (8 * num_panels, 8)
+
+    fig, axes_raw = plt.subplots(
+        nrows, ncols, figsize=figsize, subplot_kw={"projection": ccrs.PlateCarree()}
+    )
+
+    # Flatten safely for unified iteration across 1D and 2D matplotlib layouts
+    if num_panels == 1:
+        axes = [cast(GeoAxes, axes_raw)]
+    elif num_panels == 4:
+        axes = [cast(GeoAxes, ax) for ax in axes_raw.flatten()]
+    else:
+        axes = [cast(GeoAxes, ax) for ax in axes_raw]
+
+    # 6. Step through layout allocations and populate panels
+    mesh = None
+    for i, panel in enumerate(processed_panels_data):
+        ax = axes[i]
+        _style_map_axis(ax, extent)
+
+        ax.set_title(panel["title"], fontsize=14, pad=10)
+
+        # Plot the heatmap
+        mesh = ax.pcolormesh(
+            panel["lons"],
+            panel["lats"],
+            panel["speed"],
+            transform=ccrs.PlateCarree(),
+            cmap="viridis",
+            vmin=global_vmin,
+            vmax=global_vmax,
+            shading="auto",
+        )
+
+    # Add a shared colorbar across all subplots
+    if mesh is not None:
+        cbar = fig.colorbar(
+            mesh, ax=axes, orientation="horizontal", shrink=0.5, pad=0.08, aspect=40
+        )
+        cbar.set_label("Speed", fontsize=12)
+
+    output_dir = Path("images") / f"{folder_name}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if corners is None:
+        save_path = output_dir / f"speed_heatmap_t{time_idx}.png"
+    else:
+        save_path = output_dir / f"zoomed_speed_heatmap_t{time_idx}.png"
+
+    plt.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    print(f"Dynamic speed heatmap saved to {save_path}")
+
+
+def _plot_multi_experiment(
+    data: dict,
+    times: NDArray,
+    metric_name: MetricType,
+    folder_name: str | Path,
+    file_name: str = "lagrangian_divergence_metrics",
+):
+    os.makedirs(folder_name, exist_ok=True)
+    # Initialize the plot with the same sizing as the reference
+    plt.figure(figsize=(10, 6))
+
+    # Iterate through the dictionary to plot each experiment
+    # The dictionary keys will act as the labels for the legend
+    for label, values in data.items():
+        plt.plot(times, values, label=label, linewidth=2.5)
+
+    # Apply standard styling, titles, and labels
+    if metric_name == "euler_distance":
+        plt.title("Lagrangian Separation Distance from Ground Truth")
+        plt.xlabel("Advection Time (Hours)")
+        plt.ylabel("Mean Separation Distance (km)")
+
+    elif metric_name == "ftle":
+        plt.title("FTLE from Ground Truth")
+        plt.xlabel("Advection Time (Hours)")
+        plt.ylabel("FTLE (km)")
+
+    elif metric_name == "velocity_mse":
+        plt.title("MSE in speeds from Ground Truth")
+        plt.xlabel("Advection Time (Hours)")
+        plt.ylabel("Mean Square Error ($ms^{-1}$)")
+
+    plt.legend()
+    plt.grid(True, linestyle=":", alpha=0.7)
+
+    # Handle directory creation and saving the figure
+    Path(f"images/{folder_name}").mkdir(parents=True, exist_ok=True)
+    plot_path = f"images/{folder_name}/{metric_name}.png"
+    plt.savefig(plot_path, bbox_inches="tight", dpi=300)
+    print(f"Metrics plot successfully saved to {plot_path}")
+
+    # Close the plot to free up memory
+    plt.close()
+
+
+def plot_several_experiments(
+    exp_config: ExperimentConfig,
+    metrics_to_plot: Sequence[MetricType] | None = None,
+    exp_names: Sequence[ExperimentPathType] | None = None,
+):
+
+    if exp_names is None:
+        exp_names = get_args(ExperimentPathType)
+
+    if metrics_to_plot is None:
+        metrics_to_plot = get_args(MetricType)
+
+    metric_registry = {
+        "euler_distance": {
+            "csv_name": "distance.csv",
+            "title": "Distance between particles",
+            "heading": "Mean_ML_Error",
+        },
+        "ftle": {"csv_name": "ftle.csv", "title": "FTLE", "heading": "ML_Lyapunov_Exponent"},
+        "velocity_mse": {
+            "csv_name": "velocity_mse.csv",
+            "title": "FTLE",
+            "heading": "MSE_speed_ML",
+        },
+    }
+
+    for metric in metrics_to_plot:
+        if metric not in metric_registry:
+            raise KeyError(f"metric {metric} not recognised - add to metric_registry")
+
+        cfg = metric_registry[metric]
+
+        data = {}
+        time_hours = np.array([])
+
+        for i, name in enumerate(exp_names):
+            file_path = Path(exp_config.base) / name / "metrics" / cfg["csv_name"]
+
+            if not file_path.exists():
+                raise FileNotFoundError(f"Could not find results at {file_path}")
+
+            df = pl.read_csv(file_path)
+
+            if i == 0:  # calculate times (only need to do this once since all same)
+                df = df.with_columns(pl.col("time").str.to_datetime(strict=False))
+
+                time_hours = (df["time"] - df["time"][0]).dt.total_minutes() / 60.0
+
+            data[name] = df[cfg["heading"]]
+
+        _plot_multi_experiment(data, time_hours, metric, Path("comparison"))  # type: ignore

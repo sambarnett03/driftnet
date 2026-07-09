@@ -1,18 +1,8 @@
 import argparse
-import warnings
-
-from metrics.lagrange_diagnostics import evaluate_predictions
-from ml.inference_script import inference_over_test_set
-from ml.training_script import train_downscale
 
 from driftnet.config import MasterConfig
+from driftnet.plotting import plot_several_experiments
 from driftnet.utils import print_and_save_config
-
-# --- Suppress Zarr V3 experimental warnings ---
-warnings.filterwarnings("ignore", message=".*<U1*")
-warnings.filterwarnings("ignore", message=".*FixedLengthUTF32.*")
-warnings.filterwarnings("ignore", message=".*vlen-utf8*")
-warnings.filterwarnings("ignore", message=".*Consolidated metadata is currently not part.*")
 
 
 def main():
@@ -32,12 +22,17 @@ def main():
     # Edits
     print_and_save_config(config)
 
-    # Code to run
-    train_downscale(config.hyperparameters, config.data, config.experiment)
+    # # Code to run
+    # train_downscale(config.hyperparameters, config.data, config.experiment)
 
-    inference_over_test_set(config.data, config.hyperparameters, config.experiment)
+    # inference_over_test_set(config.data, config.hyperparameters, config.experiment)
 
-    evaluate_predictions(config.data, config.experiment)
+    # evaluate_predictions(config.data, config.experiment)
+
+    plot_several_experiments(
+        config.experiment,
+        exp_names=["default_experiment/baseline_trial", "pixelshuffle/baseline_trial"],
+    )
 
 
 if __name__ == "__main__":

@@ -181,11 +181,8 @@ def _setup_fieldsets(data_config: DataConfig, exp_config: ExperimentConfig, test
     fs_pred = prepare_fieldset(
         exp_config.model_predictions, data_config.grid_params_path, test_times, x_slice, y_slice
     )
-    fs_interp = prepare_fieldset(
-        data_config.interpolated, data_config.grid_params_path, test_times, x_slice, y_slice
-    )
 
-    return fs_truth, fs_pred, fs_interp
+    return fs_truth, fs_pred
 
 
 def _setup_test_particles(data_config: DataConfig, test_times: NDArray):
@@ -222,8 +219,7 @@ def get_connectivity_metrics(exp_config: ExperimentConfig) -> tuple[pl.DataFrame
         agg_df: Aggregated DataFrame containing mean errors per timestep.
     """
     truth_file = exp_config.metrics / "trajectories_truth.zarr"
-    pred_file = exp_config.metrics / "trajectories_ml.zarr"
-    interp_file = exp_config.metrics / "trajectories_interpolated.zarr"
+    pred_file = exp_config.metrics / "trajectories_ml_predicted.zarr"
 
     # Open using Xarray and drop into Polars via Pandas
     ds_truth = xr.open_zarr(truth_file)
@@ -240,25 +236,13 @@ def get_connectivity_metrics(exp_config: ExperimentConfig) -> tuple[pl.DataFrame
         .drop(["obs", "z"])
     )
 
-    df_interp = xr.open_zarr(interp_file)
-    df_interp = (
-        pl.from_pandas(df_interp.to_dataframe().reset_index())
-        .rename({"lon": "lon_i", "lat": "lat_i"})
-        .drop(["obs", "z"])
-    )
-
     # Normalize trajectory IDs in case they drifted during simulation setup
     df_pred = df_pred.with_columns(
         (pl.col("trajectory") - pl.col("trajectory").min()).alias("trajectory")
     )
-    df_interp = df_interp.with_columns(
-        (pl.col("trajectory") - pl.col("trajectory").min()).alias("trajectory")
-    )
 
     # Merge on particle ID and Time
-    df_compare = df_truth.join(df_pred, on=["time", "trajectory"]).join(
-        df_interp, on=["time", "trajectory"]
-    )
+    df_compare = df_truth.join(df_pred, on=["time", "trajectory"])
 
     # Calculate Haversine Distances
     ml_error = haversine_distance(
@@ -267,26 +251,15 @@ def get_connectivity_metrics(exp_config: ExperimentConfig) -> tuple[pl.DataFrame
         df_compare["lon_p"].to_numpy(),
         df_compare["lat_p"].to_numpy(),
     )
-    interp_error = haversine_distance(
-        df_compare["lon_t"].to_numpy(),
-        df_compare["lat_t"].to_numpy(),
-        df_compare["lon_i"].to_numpy(),
-        df_compare["lat_i"].to_numpy(),
-    )
 
     df_compare = df_compare.with_columns(
-        [pl.Series("ML_Error_km", ml_error), pl.Series("Interp_Error_km", interp_error)]
+        [pl.Series("ML_Error_km", ml_error)]
     )
 
     # Create the aggregated dataframe for time-series plotting
     agg_df = (
         df_compare.group_by("time")
-        .agg(
-            [
-                pl.col("ML_Error_km").mean().alias("Mean_ML_Error"),
-                pl.col("Interp_Error_km").mean().alias("Mean_Interp_Error"),
-            ]
-        )
+        .agg(pl.col("ML_Error_km").mean().alias("Mean_ML_Error"))
         .sort("time")
     )
 
@@ -294,7 +267,6 @@ def get_connectivity_metrics(exp_config: ExperimentConfig) -> tuple[pl.DataFrame
     Path("results").mkdir(parents=True, exist_ok=True)
     append_mean_row(agg_df).write_csv(exp_config.metrics / "distance.csv")
 
-    # Return BOTH the granular trajectory data and the aggregated data
     return df_compare, agg_df
 
 

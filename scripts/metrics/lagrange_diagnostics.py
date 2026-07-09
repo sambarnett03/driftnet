@@ -4,18 +4,21 @@ import numpy as np
 import polars as pl
 
 from driftnet.config import DataConfig, ExperimentConfig
-from driftnet.metrics.ftle import add_cross_field_lyapunov, plot_ftle_results
+from driftnet.metrics.ftle import add_cross_field_lyapunov
 from driftnet.metrics.lagrange import (
     _setup_experiment,
     _setup_fieldsets,
     _setup_test_particles,
     get_connectivity_metrics,
-    plot_connectivity_results,
     run_parcels_simulation,
 )
 from driftnet.metrics.mse import calculate_velocity_mse
-from driftnet.plotting import plot_lagrangian_trajectories, plot_speed_heatmaps
-
+from driftnet.plotting import (
+    plot_multi_experiment_trajectories,
+    plot_multi_experiment_speed_heatmaps,
+    plot_several_experiments,
+    plot_combined_experiment_trajectories
+)
 
 def compute_trajectories(
     data_config: DataConfig,
@@ -29,7 +32,7 @@ def compute_trajectories(
     test_times, runtime, out_dir = _setup_experiment(exp_config, start_time, duration_days)
 
     # Prepare FieldSets
-    fs_truth, fs_pred, fs_interp = _setup_fieldsets(data_config, exp_config, test_times)
+    fs_truth, fs_pred = _setup_fieldsets(data_config, exp_config, test_times)
 
     # Choose starting locations (drop particles in valid open ocean, avoiding land)
     start_lons, start_lats, start_times_array = _setup_test_particles(data_config, test_times)
@@ -44,27 +47,31 @@ def compute_trajectories(
         "ml_predicted", fs_pred, start_lons, start_lats, start_times_array, runtime, out_dir
     )
 
-    run_parcels_simulation(
-        "interpolated", fs_interp, start_lons, start_lats, start_times_array, runtime, out_dir
-    )
-
 
 def save_metrics(data_config: DataConfig, exp_config: ExperimentConfig, _plot=False):
     df_compare, df_agg = get_connectivity_metrics(exp_config)
 
     df_lyap, lyap_agg = add_cross_field_lyapunov(
-        exp_config, df_compare, error_cols=["ML_Error_km", "Interp_Error_km"]
+        exp_config, df_compare, error_cols=["ML_Error_km"]
     )
 
     calculate_velocity_mse(data_config, exp_config)
 
-    if _plot is True:
-        folder_name = Path(exp_config.exp_name) / exp_config.trial_name
-        plot_connectivity_results(df_agg, folder_name)
-        plot_ftle_results(lyap_agg, folder_name)
 
-        # Plot trajectories
-        plot_lagrangian_trajectories(data_config, exp_config, ["truth", "predicted"], folder_name)
+def plot_metrics(data_config: DataConfig, exp_config: ExperimentConfig):
+    # Plot experiment results across all trials
+    plot_several_experiments(exp_config)
+
+    # Plot trajectories
+    plot_multi_experiment_trajectories(exp_config)
+    plot_combined_experiment_trajectories(exp_config)
+
+    # Plot heat map
+    plot_multi_experiment_speed_heatmaps(
+        data_config,
+        exp_config,
+        corners=[40.0, 42.5, -20.0, -17.5]
+    )
 
 
 def print_final_metrics(exp_config):
@@ -95,12 +102,6 @@ def print_final_metrics(exp_config):
 
 def evaluate_predictions(data_config: DataConfig, exp_config: ExperimentConfig):
     # compute_trajectories(data_config, exp_config)
-    save_metrics(data_config, exp_config, _plot=True)
+    # save_metrics(data_config, exp_config, _plot=True)
+    plot_metrics(data_config, exp_config)
     print_final_metrics(exp_config)
-    plot_speed_heatmaps(
-        data_config,
-        exp_config,
-        ["truth", "degraded", "predicted", "interpolated"],
-        Path(exp_config.exp_name) / exp_config.trial_name,
-        corners=[40.0, 42.5, -20.0, -17.5],
-    )

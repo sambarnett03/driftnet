@@ -1,6 +1,6 @@
 # --- Experiment Settings ---
 experiment:
-  exp_name: "pixelshuffle"
+  exp_name: "interpolate"
   trial_name: ""
   base: /gws/ssde/j25b/oxford_es/sbarnett/driftnet/experiments
 

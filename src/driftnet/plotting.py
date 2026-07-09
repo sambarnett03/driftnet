@@ -2,6 +2,8 @@ import os
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal, cast, get_args
+import math
+
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -537,75 +539,68 @@ def _plot_single_panel(
 
 
 # Define a literal type for static type checking safety
-FieldType = Literal["truth", "predicted", "interpolated", "degraded"]
+FieldType = Literal["truth", "predicted", "degraded"]
 
 
-def plot_lagrangian_trajectories(
-    data_config: DataConfig,
+def plot_multi_experiment_trajectories(
     exp_config: ExperimentConfig,
-    fields_to_plot: list[FieldType],
-    folder_name: str | Path,
+    exp_names: Sequence[ExperimentPathType] | None = None,
+    folder_name: str | Path = "comparison",
     padding: float = 2.0,
 ) -> None:
     """
-    Dynamically plots a variable number of panels side-by-side matching the requested field strings.
+    Dynamically plots side-by-side trajectory panels for ground truth and all specified experiments.
     """
-    if not fields_to_plot:
-        raise ValueError("The list 'fields_to_plot' cannot be empty.")
+    # 1. Resolve experiment names
+    if exp_names is None:
+        exp_names = get_args(ExperimentPathType)
 
-    # 1. Load base coordinates and extract spatial slices
-    x_slice, y_slice = _get_valid_spatial_slices(data_config)
+    if not exp_names:
+        raise ValueError("No experiments provided to plot.")
 
-    # 2. Define the Field Mapping Registry
-    # (Note: Fixed the 'interpolated' path typo to use data_config.interpolated)
-    field_registry = {
-        "truth": {
-            "ds_path": data_config.original_res,
-            "traj_path": exp_config.metrics / "trajectories_truth.zarr",
-            "title": "Ground Truth",
-            "needs_slice": True,  # Ground truth needs spatial trimming
-        },
-        "predicted": {
-            "ds_path": exp_config.model_predictions,
-            "traj_path": exp_config.metrics / "trajectories_ml.zarr",
-            "title": "ML Predicted",
-            "needs_slice": False,
-        },
-        "interpolated": {
-            "ds_path": data_config.interpolated,
-            "traj_path": exp_config.metrics / "trajectories_interpolated.zarr",
-            "title": "Bilinear Interpolation",
-            "needs_slice": False,
-        },
-    }
-
-    # 3. Process data dynamically for all requested fields
     all_lons_combined: list[NDArray] = []
     all_lats_combined: list[NDArray] = []
     processed_panels_data = []
 
-    for field in fields_to_plot:
-        if field not in field_registry:
-            raise ValueError(f"Unknown field key mapping requested: '{field}'")
+    # 2. Extract Ground Truth
+    # Assuming ground truth is identical across experiments, we pull it from the first one.
+    truth_traj_path = Path(exp_config.base) / exp_names[0] / "metrics" / "trajectories_truth.zarr"
 
-        cfg = field_registry[field]
+    if not truth_traj_path.exists():
+        raise FileNotFoundError(f"Could not find Ground Truth trajectories at {truth_traj_path}")
 
-        # Load and potentially slice target dataset
-        ds = xr.open_zarr(cfg["ds_path"])
-        if cfg["needs_slice"]:
-            ds = ds.isel(x=x_slice, y=y_slice)
+    truth_trajectories = extract_trajectories(truth_traj_path)
+    t_lons = _normalize_trajectories(truth_trajectories[0])
+    t_lats = _normalize_trajectories(truth_trajectories[1])
 
-        # Pull tracking trajectories
-        trajectories = extract_trajectories(cfg["traj_path"])
+    all_lons_combined.extend(t_lons)
+    all_lats_combined.extend(t_lats)
+
+    processed_panels_data.append({
+        "title": "Ground Truth",
+        "lons": t_lons,
+        "lats": t_lats
+    })
+
+    # 3. Iterate over experiments and extract ML predictions dynamically
+    for name in exp_names:
+        exp_traj_path = Path(exp_config.base) / name / "metrics" / "trajectories_ml_predicted.zarr"
+
+        if not exp_traj_path.exists():
+            raise FileNotFoundError(f"Could not find predicted trajectories at {exp_traj_path}")
+
+        trajectories = extract_trajectories(exp_traj_path)
         _lons = _normalize_trajectories(trajectories[0])
         _lats = _normalize_trajectories(trajectories[1])
 
-        # Aggregate tracking points for overall bounding box calculation
         all_lons_combined.extend(_lons)
         all_lats_combined.extend(_lats)
 
-        # Buffer dictionary payload for plotting step
-        processed_panels_data.append({"title": cfg["title"], "lons": _lons, "lats": _lats})
+        processed_panels_data.append({
+            "title": f"Predicted: {name}",
+            "lons": _lons,
+            "lats": _lats
+        })
 
     # 4. Global map bounds calculation
     extent = _get_extent(
@@ -613,7 +608,7 @@ def plot_lagrangian_trajectories(
     )
 
     # 5. Dynamic Subplot Setup
-    num_panels = len(fields_to_plot)
+    num_panels = len(processed_panels_data)
     fig, axes_raw = plt.subplots(
         1, num_panels, figsize=(8 * num_panels, 8), subplot_kw={"projection": ccrs.PlateCarree()}
     )
@@ -629,65 +624,179 @@ def plot_lagrangian_trajectories(
             ax=ax, title=panel["title"], track_lons=panel["lons"], track_lats=panel["lats"]
         )
 
-    output_dir = Path("images") / f"{folder_name}"
+    # 7. Save out image
+    output_dir = Path("images") / str(folder_name)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    save_path = output_dir / "trajectory_comparison.png"
+    save_path = output_dir / "multi_experiment_trajectories.png"
     plt.savefig(save_path, bbox_inches="tight", dpi=300)
     plt.close(fig)
     print(f"Dynamic trajectory plot saved to {save_path}")
 
 
-def plot_speed_heatmaps(
+
+def plot_combined_experiment_trajectories(
+    exp_config: ExperimentConfig,
+    exp_names: Sequence[ExperimentPathType] | None = None,
+    folder_name: str | Path = "comparison",
+    padding: float = 2.0,
+) -> None:
+    """
+    Plots the ground truth and ML predicted trajectories for all specified
+    experiments overlaid on a single map.
+    """
+    # 1. Resolve experiment names
+    if exp_names is None:
+        exp_names = get_args(ExperimentPathType)
+
+    if not exp_names:
+        raise ValueError("No experiments provided to plot.")
+
+    all_lons_combined: list[NDArray] = []
+    all_lats_combined: list[NDArray] = []
+
+    # Store trajectory data to plot later: {"label": str, "lons": NDArray, "lats": NDArray}
+    trajectories_to_plot = []
+
+    # 2. Extract Ground Truth (from the first experiment)
+    truth_traj_path = Path(exp_config.base) / exp_names[0] / "metrics" / "trajectories_truth.zarr"
+
+    if not truth_traj_path.exists():
+        raise FileNotFoundError(f"Could not find Ground Truth trajectories at {truth_traj_path}")
+
+    truth_trajectories = extract_trajectories(truth_traj_path)
+    t_lons = _normalize_trajectories(truth_trajectories[0])
+    t_lats = _normalize_trajectories(truth_trajectories[1])
+
+    all_lons_combined.extend(t_lons)
+    all_lats_combined.extend(t_lats)
+
+    trajectories_to_plot.append({
+        "label": "Ground Truth",
+        "lons": t_lons,
+        "lats": t_lats,
+        "is_truth": True
+    })
+
+    # 3. Iterate over experiments and extract ML predictions
+    for name in exp_names:
+        exp_traj_path = Path(exp_config.base) / name / "metrics" / "trajectories_ml_predicted.zarr"
+
+        if not exp_traj_path.exists():
+            raise FileNotFoundError(f"Could not find predicted trajectories at {exp_traj_path}")
+
+        trajectories = extract_trajectories(exp_traj_path)
+        _lons = _normalize_trajectories(trajectories[0])
+        _lats = _normalize_trajectories(trajectories[1])
+
+        all_lons_combined.extend(_lons)
+        all_lats_combined.extend(_lats)
+
+        trajectories_to_plot.append({
+            "label": f"Predicted: {name}",
+            "lons": _lons,
+            "lats": _lats,
+            "is_truth": False
+        })
+
+    # 4. Global map bounds calculation
+    extent = _get_extent(
+        np.concatenate(all_lons_combined), np.concatenate(all_lats_combined), padding=padding
+    )
+
+    # 5. Single Map Setup
+    fig, ax = plt.subplots(
+        1, 1, figsize=(12, 10), subplot_kw={"projection": ccrs.PlateCarree()}
+    )
+    ax = cast(GeoAxes, ax)
+
+    _style_map_axis(ax, extent)
+    ax.set_title("Combined Trajectories Comparison", fontsize=14, pad=15)
+
+    # 6. Plot all collected trajectories onto the single axis
+    for item in trajectories_to_plot:
+        track_lons = item["lons"]
+        track_lats = item["lats"]
+        label = item["label"]
+
+        # Styling: Make ground truth stand out (e.g., thicker black line)
+        if item["is_truth"]:
+            color = "black"
+            linewidth = 2.5
+            zorder = 5  # Ensure truth is drawn on top
+            alpha = 1.0
+            style = 'dashed'
+        else:
+            color = None  # Let matplotlib cycle through default colors
+            linewidth = 1.5
+            zorder = 4
+            alpha = 0.8
+            style = 'solid'
+
+        # Iterate through the list of arrays just like in _plot_single_panel
+        for i, (lons, lats) in enumerate(zip(track_lons, track_lats, strict=False)):
+            ax.plot(
+                lons,
+                lats,
+                label=label if i == 0 else None,  # Only add label once per experiment
+                color=color,
+                linestyle=style,
+                linewidth=linewidth,
+                alpha=alpha,
+                zorder=zorder,
+                transform=ccrs.PlateCarree()
+            )
+            # Start marker
+            ax.scatter(
+                lons[0], lats[0], color="green", marker="o", transform=ccrs.PlateCarree(), zorder=zorder+1
+            )
+            # End marker
+            ax.scatter(
+                lons[-1], lats[-1], color="red", marker="X", transform=ccrs.PlateCarree(), zorder=zorder+1
+            )
+
+    # Add legend outside the plot to avoid covering trajectories
+    ax.legend(loc="center left", bbox_to_anchor=(1.05, 0.5), frameon=False, title="Experiments")
+    # 7. Save out image
+    output_dir = Path("images") / str(folder_name)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    save_path = output_dir / "combined_experiment_trajectories.png"
+    plt.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    print(f"Combined trajectory plot saved to {save_path}")
+
+
+
+def plot_multi_experiment_speed_heatmaps(
     data_config: DataConfig,
     exp_config: ExperimentConfig,
-    fields_to_plot: list[FieldType],
-    folder_name: str | Path,
+    exp_names: Sequence[ExperimentPathType] | None = None,
+    folder_name: str | Path = "comparison",
     time_idx: int = 0,
     corners: Any = None,
     padding: float = 2.0,
 ) -> None:
     """
-    Dynamically plots a variable number of speed heatmap panels side-by-side.
-    If exactly 4 fields are provided, they are plotted in a 2x2 grid layout.
+    Dynamically plots speed heatmaps for Ground Truth and multiple experiments.
+    Automatically calculates an optimal grid layout to scale nicely with the number of experiments.
     """
-    if not fields_to_plot:
-        raise ValueError("The list 'fields_to_plot' cannot be empty.")
+    # 1. Resolve experiment names
+    if exp_names is None:
+        exp_names = get_args(ExperimentPathType)
 
-    # Get datetime corresponding to time_idx
+    if not exp_names:
+        raise ValueError("No experiments provided to plot.")
+
+    # Get datetime corresponding to time_idx from the ground truth dataset
     times = xr.open_zarr(exp_config.model_predictions).time_counter.values
     datetime_str = times[time_idx]
 
-    # 1. Load base coordinates and extract spatial slices
+    # 2. Load base coordinates and extract spatial slices
     x_slice, y_slice = _get_valid_spatial_slices(data_config)
     base_lons = np.load(data_config.grid_params)["rho_lon"][y_slice, x_slice]
     base_lats = np.load(data_config.grid_params)["rho_lat"][y_slice, x_slice]
 
-    # 2. Define the Field Mapping Registry
-    field_registry = {
-        "truth": {
-            "ds_path": data_config.original_res,
-            "title": "Ground Truth",
-            "needs_slice": True,
-        },
-        "predicted": {
-            "ds_path": exp_config.model_predictions,
-            "title": "ML Predicted",
-            "needs_slice": False,
-        },
-        "interpolated": {
-            "ds_path": data_config.interpolated,
-            "title": "Bilinear Interpolation",
-            "needs_slice": False,
-        },
-        "degraded": {
-            "ds_path": data_config.degraded_res,
-            "title": "Degraded Resolution",
-            "needs_slice": False,
-        },
-    }
-
-    # 3. Process data dynamically for all requested fields
     all_lons_combined: list[np.ndarray] = []
     all_lats_combined: list[np.ndarray] = []
     processed_panels_data = []
@@ -695,15 +804,12 @@ def plot_speed_heatmaps(
     global_vmin = float("inf")
     global_vmax = float("-inf")
 
-    for field in fields_to_plot:
-        if field not in field_registry:
-            raise ValueError(f"Unknown field key mapping requested: '{field}'")
+    # Helper function to process datasets
+    def process_dataset(ds_path: Path | str, title: str, needs_slice: bool):
+        nonlocal global_vmin, global_vmax
 
-        cfg = field_registry[field]
-
-        # Load and potentially slice target dataset
-        ds = xr.open_zarr(cfg["ds_path"])
-        if cfg["needs_slice"]:
+        ds = xr.open_zarr(ds_path)
+        if needs_slice:
             ds = ds.isel(x=x_slice, y=y_slice)
 
         # Isolate the specific time step for the heatmap
@@ -712,68 +818,85 @@ def plot_speed_heatmaps(
         # Extract U and V to calculate scalar speed
         u = ds["velocity"].isel(component=0)
         v = ds["velocity"].isel(component=1)
-
         speed = ((u**2 + v**2) ** 0.5).values
 
-        plot_lons = base_lons
-        plot_lats = base_lats
-
-        if field == "degraded":
-            plot_lats = _block_average_2d(
-                base_lats, data_config.degrade_factor, data_config.degrade_factor
-            )
-            plot_lons = _block_average_2d(
-                base_lons, data_config.degrade_factor, data_config.degrade_factor
-            )
-
-        # Aggregate tracking points for overall bounding box calculation
-        all_lons_combined.extend(plot_lons.flatten())
-        all_lats_combined.extend(plot_lats.flatten())
+        all_lons_combined.append(base_lons.flatten())
+        all_lats_combined.append(base_lats.flatten())
 
         # Track global min/max for a shared colorbar
         global_vmin = min(global_vmin, np.nanmin(speed))
         global_vmax = max(global_vmax, np.nanmax(speed))
 
-        # Buffer dictionary payload for plotting step
         processed_panels_data.append(
-            {"title": cfg["title"], "lons": plot_lons, "lats": plot_lats, "speed": speed}
+            {"title": title, "lons": base_lons, "lats": base_lats, "speed": speed}
         )
 
-    # 4. Global map bounds calculation
+    # 3. Process Ground Truth
+    process_dataset(
+        ds_path=data_config.original_res,
+        title="Ground Truth",
+        needs_slice=True
+    )
+
+    # 4. Process all requested ML Experiments
+    # We infer the prediction filename from the exp_config to ensure we load the correct file
+    pred_filename = Path(exp_config.model_predictions).name
+
+    for name in exp_names:
+        exp_pred_path = Path(exp_config.base) / name / pred_filename
+
+        if not exp_pred_path.exists():
+            raise FileNotFoundError(f"Could not find predicted dataset at {exp_pred_path}")
+
+        process_dataset(
+            ds_path=exp_pred_path,
+            title=f"Predicted: {name}",
+            needs_slice=False
+        )
+
+    # 5. Global map bounds calculation
     extent = _get_extent(
-        np.concatenate([np.array(all_lons_combined)]),
-        np.concatenate([np.array(all_lats_combined)]),
+        np.concatenate(all_lons_combined),
+        np.concatenate(all_lats_combined),
         padding=padding,
         corners=corners,
     )
 
-    # 5. Dynamic Subplot Setup (Handles 2x2 grid if 4 items are provided)
-    num_panels = len(fields_to_plot)
-    if num_panels == 4:
+    # 6. Dynamic Subplot Setup (Scales beautifully with panel count)
+    num_panels = len(processed_panels_data)
+
+    if num_panels == 1:
+        nrows, ncols = 1, 1
+    elif num_panels == 2:
+        nrows, ncols = 1, 2
+    elif num_panels == 3:
+        nrows, ncols = 1, 3
+    elif num_panels == 4:
         nrows, ncols = 2, 2
-        figsize = (16, 16)
     else:
-        nrows, ncols = 1, num_panels
-        figsize = (8 * num_panels, 8)
+        # Generic fallback for larger numbers (e.g., 5 panels -> 2x3, 7 panels -> 3x3)
+        ncols = math.ceil(math.sqrt(num_panels))
+        nrows = math.ceil(num_panels / ncols)
 
     fig, axes_raw = plt.subplots(
-        nrows, ncols, figsize=figsize, subplot_kw={"projection": ccrs.PlateCarree()}
+        nrows, ncols, figsize=(8 * ncols, 8 * nrows), subplot_kw={"projection": ccrs.PlateCarree()}
     )
 
-    # Flatten safely for unified iteration across 1D and 2D matplotlib layouts
-    if num_panels == 1:
-        axes = [cast(GeoAxes, axes_raw)]
-    elif num_panels == 4:
-        axes = [cast(GeoAxes, ax) for ax in axes_raw.flatten()]
-    else:
-        axes = [cast(GeoAxes, ax) for ax in axes_raw]
+    # Flatten safely for unified iteration
+    axes_flat = np.atleast_1d(axes_raw).flatten()
 
-    # 6. Step through layout allocations and populate panels
+    # 7. Step through layout allocations and populate panels
     mesh = None
-    for i, panel in enumerate(processed_panels_data):
-        ax = axes[i]
-        _style_map_axis(ax, extent)
+    for i, ax_raw in enumerate(axes_flat):
+        ax = cast(GeoAxes, ax_raw)
 
+        # Turn off axes that don't have data (e.g., the 6th panel in a 2x3 grid with only 5 datasets)
+        if i >= num_panels:
+            ax.axis("off")
+            continue
+
+        panel = processed_panels_data[i]
+        _style_map_axis(ax, extent)
         ax.set_title(panel["title"], fontsize=14, pad=10)
 
         # Plot the heatmap
@@ -791,17 +914,16 @@ def plot_speed_heatmaps(
     # Add a shared colorbar across all subplots
     if mesh is not None:
         cbar = fig.colorbar(
-            mesh, ax=axes, orientation="horizontal", shrink=0.5, pad=0.08, aspect=40
+            mesh, ax=axes_flat, orientation="horizontal", shrink=0.5, pad=0.08, aspect=40
         )
         cbar.set_label("Speed", fontsize=12)
 
-    output_dir = Path("images") / f"{folder_name}"
+    # 8. Save out image
+    output_dir = Path("images") / 'comparison'
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if corners is None:
-        save_path = output_dir / f"speed_heatmap_t{time_idx}.png"
-    else:
-        save_path = output_dir / f"zoomed_speed_heatmap_t{time_idx}.png"
+    prefix = "zoomed_" if corners is not None else ""
+    save_path = output_dir / f"{prefix}multi_exp_speed_heatmap_t{time_idx}.png"
 
     plt.savefig(save_path, bbox_inches="tight", dpi=300)
     plt.close(fig)
@@ -903,4 +1025,4 @@ def plot_several_experiments(
 
             data[name] = df[cfg["heading"]]
 
-        _plot_multi_experiment(data, time_hours, metric, Path("comparison"))  # type: ignore
+        _plot_multi_experiment(data, time_hours, metric, Path("comparison"))

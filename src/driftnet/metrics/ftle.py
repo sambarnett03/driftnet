@@ -54,7 +54,7 @@ def add_cross_field_lyapunov(
     into modular data processing stages.
     """
     if error_cols is None:
-        error_cols = ["ML_Error_km", "Interp_Error_km"]
+        error_cols = ["ML_Error_km"]
 
     # 1. Resolve the burn-in reference step (t1)
     t1 = _extract_burn_in_time(df_compare)
@@ -87,7 +87,7 @@ def add_cross_field_lyapunov(
 
     agg_lyap_df = (
         df_lyap.group_by("time")
-        .agg([pl.col("ML_Lyapunov_Exponent").mean(), pl.col("Interp_Lyapunov_Exponent").mean()])
+        .agg([pl.col("ML_Lyapunov_Exponent").mean()])
         .sort("time")
     )
 
@@ -95,30 +95,3 @@ def add_cross_field_lyapunov(
 
     return df_lyap, agg_lyap_df
 
-
-def plot_ftle_results(agg_df: pl.DataFrame, folder_name: str | Path, file_name: str = "layp"):
-
-    time_hours = (agg_df["time"] - agg_df["time"][0]).dt.total_minutes() / 60.0
-
-    plt.figure(figsize=(10, 6))
-    plt.plot(
-        time_hours, agg_df["ML_Lyapunov_Exponent"], label="ML Super-Res", linewidth=2.5, color="red"
-    )
-    plt.plot(
-        time_hours,
-        agg_df["Interp_Lyapunov_Exponent"],
-        label="Bilinear Interpolation",
-        linewidth=2.5,
-        color="blue",
-        linestyle="--",
-    )
-    plt.title("FTLE from Ground Truth")
-    plt.xlabel("Advection Time (Hours)")
-    plt.ylabel("FTLE (km)")
-    plt.legend()
-    plt.grid(True, linestyle=":", alpha=0.7)
-
-    Path(f"images/{folder_name}").mkdir(parents=True, exist_ok=True)
-    plot_path = f"images/{folder_name}/{file_name}.png"
-    plt.savefig(plot_path, bbox_inches="tight", dpi=300)
-    print(f"Metrics plot successfully saved to {plot_path}")

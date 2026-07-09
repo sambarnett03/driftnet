@@ -23,7 +23,7 @@ def _extract_velocity_components(ds: xr.Dataset) -> tuple[xr.DataArray, xr.DataA
 
 def _load_and_align_ground_truth(data_config: DataConfig, eval_times: xr.DataArray) -> xr.Dataset:
     """
-    Loads the 4TB ground truth zarr, slices it spatially to match the domain,
+    Loads the ground truth zarr, slices it spatially to match the domain,
     and slices it temporally to match the model evaluation period.
     """
     ds_gt = xr.open_zarr(data_config.original_res)
@@ -56,9 +56,8 @@ def calculate_velocity_mse(data_config: DataConfig, exp_config: ExperimentConfig
     """
     print("Loading datasets and building MSE compute graph...")
 
-    # 1. Load predicted and interpolated datasets
+    # 1. Load predicted dataset
     ds_pred = xr.open_zarr(exp_config.model_predictions)
-    ds_interp = xr.open_zarr(data_config.interpolated)
 
     # 2. Get the evaluation timestamps to align the Ground Truth
     eval_times = ds_pred["time_counter"]
@@ -67,16 +66,11 @@ def calculate_velocity_mse(data_config: DataConfig, exp_config: ExperimentConfig
     # 3. Extract u, v, and speed components for all three fields
     u_gt, v_gt, speed_gt = _extract_velocity_components(ds_gt)
     u_ml, v_ml, speed_ml = _extract_velocity_components(ds_pred)
-    u_in, v_in, speed_in = _extract_velocity_components(ds_interp)
 
     # 4. Build the lazy MSE graphs
     mse_u_ml = _calculate_spatial_mse(u_ml, u_gt)
     mse_v_ml = _calculate_spatial_mse(v_ml, v_gt)
     mse_s_ml = _calculate_spatial_mse(speed_ml, speed_gt)
-
-    mse_u_in = _calculate_spatial_mse(u_in, u_gt)
-    mse_v_in = _calculate_spatial_mse(v_in, v_gt)
-    mse_s_in = _calculate_spatial_mse(speed_in, speed_gt)
 
     print("Executing Dask compute (this may take a moment)...")
 
@@ -88,9 +82,6 @@ def calculate_velocity_mse(data_config: DataConfig, exp_config: ExperimentConfig
             "MSE_u_ML": mse_u_ml.compute().values,
             "MSE_v_ML": mse_v_ml.compute().values,
             "MSE_speed_ML": mse_s_ml.compute().values,
-            "MSE_u_Interp": mse_u_in.compute().values,
-            "MSE_v_Interp": mse_v_in.compute().values,
-            "MSE_speed_Interp": mse_s_in.compute().values,
         }
     )
 

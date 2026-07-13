@@ -252,9 +252,7 @@ def get_connectivity_metrics(exp_config: ExperimentConfig) -> tuple[pl.DataFrame
         df_compare["lat_p"].to_numpy(),
     )
 
-    df_compare = df_compare.with_columns(
-        [pl.Series("ML_Error_km", ml_error)]
-    )
+    df_compare = df_compare.with_columns([pl.Series("ML_Error_km", ml_error)])
 
     # Create the aggregated dataframe for time-series plotting
     agg_df = (

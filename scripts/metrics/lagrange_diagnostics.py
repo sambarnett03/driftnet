@@ -1,4 +1,3 @@
-from pathlib import Path
 import shutil
 
 import numpy as np
@@ -15,11 +14,12 @@ from driftnet.metrics.lagrange import (
 )
 from driftnet.metrics.mse import calculate_velocity_mse
 from driftnet.plotting import (
-    plot_multi_experiment_trajectories,
+    plot_combined_experiment_trajectories,
     plot_multi_experiment_speed_heatmaps,
+    plot_multi_experiment_trajectories,
     plot_several_experiments,
-    plot_combined_experiment_trajectories
 )
+
 
 def compute_trajectories(
     data_config: DataConfig,
@@ -41,8 +41,8 @@ def compute_trajectories(
 
     # Run simulations
     shutil.copytree(
-        '/gws/ssde/j25b/oxford_es/sbarnett/driftnet/experiments/default_experiment/baseline_trial/metrics/trajectories_truth.zarr',
-        exp_config.metrics / 'trajectories_truth.zarr'
+        "/gws/ssde/j25b/oxford_es/sbarnett/driftnet/experiments/default_experiment/baseline_trial/metrics/trajectories_truth.zarr",
+        exp_config.metrics / "trajectories_truth.zarr",
     )
 
     run_parcels_simulation(
@@ -53,9 +53,7 @@ def compute_trajectories(
 def save_metrics(data_config: DataConfig, exp_config: ExperimentConfig, _plot=False):
     df_compare, df_agg = get_connectivity_metrics(exp_config)
 
-    df_lyap, lyap_agg = add_cross_field_lyapunov(
-        exp_config, df_compare, error_cols=["ML_Error_km"]
-    )
+    df_lyap, lyap_agg = add_cross_field_lyapunov(exp_config, df_compare, error_cols=["ML_Error_km"])
 
     calculate_velocity_mse(data_config, exp_config)
 
@@ -70,9 +68,7 @@ def plot_metrics(data_config: DataConfig, exp_config: ExperimentConfig):
 
     # Plot heat map
     plot_multi_experiment_speed_heatmaps(
-        data_config,
-        exp_config,
-        corners=[40.0, 42.5, -20.0, -17.5]
+        data_config, exp_config, corners=[40.0, 42.5, -20.0, -17.5]
     )
 
 

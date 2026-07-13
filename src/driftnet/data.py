@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import xarray as xr
 from numpy.typing import NDArray
 
-from driftnet.config import DataConfig, HyperparametersConfig, ExperimentConfig
+from driftnet.config import DataConfig, ExperimentConfig, HyperparametersConfig
 from driftnet.ml.dataset import _read_indices_from_csv
 from driftnet.utils import get_spatial_trim_slices
 

@@ -3,4 +3,6 @@
 
 from typing import Literal
 
-ExperimentPathType = Literal["default_experiment/baseline_trial", "interpolate/baseline_trial", "pixelshuffle/baseline_trial"]
+ExperimentPathType = Literal[
+    "default_experiment/baseline_trial", "interpolate/baseline_trial", "pixelshuffle/baseline_trial"
+]

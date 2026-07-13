@@ -1,9 +1,8 @@
+import math
 import os
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal, cast, get_args
-import math
-
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -576,11 +575,7 @@ def plot_multi_experiment_trajectories(
     all_lons_combined.extend(t_lons)
     all_lats_combined.extend(t_lats)
 
-    processed_panels_data.append({
-        "title": "Ground Truth",
-        "lons": t_lons,
-        "lats": t_lats
-    })
+    processed_panels_data.append({"title": "Ground Truth", "lons": t_lons, "lats": t_lats})
 
     # 3. Iterate over experiments and extract ML predictions dynamically
     for name in exp_names:
@@ -596,11 +591,7 @@ def plot_multi_experiment_trajectories(
         all_lons_combined.extend(_lons)
         all_lats_combined.extend(_lats)
 
-        processed_panels_data.append({
-            "title": f"Predicted: {name}",
-            "lons": _lons,
-            "lats": _lats
-        })
+        processed_panels_data.append({"title": f"Predicted: {name}", "lons": _lons, "lats": _lats})
 
     # 4. Global map bounds calculation
     extent = _get_extent(
@@ -632,7 +623,6 @@ def plot_multi_experiment_trajectories(
     plt.savefig(save_path, bbox_inches="tight", dpi=300)
     plt.close(fig)
     print(f"Dynamic trajectory plot saved to {save_path}")
-
 
 
 def plot_combined_experiment_trajectories(
@@ -671,12 +661,9 @@ def plot_combined_experiment_trajectories(
     all_lons_combined.extend(t_lons)
     all_lats_combined.extend(t_lats)
 
-    trajectories_to_plot.append({
-        "label": "Ground Truth",
-        "lons": t_lons,
-        "lats": t_lats,
-        "is_truth": True
-    })
+    trajectories_to_plot.append(
+        {"label": "Ground Truth", "lons": t_lons, "lats": t_lats, "is_truth": True}
+    )
 
     # 3. Iterate over experiments and extract ML predictions
     for name in exp_names:
@@ -692,12 +679,9 @@ def plot_combined_experiment_trajectories(
         all_lons_combined.extend(_lons)
         all_lats_combined.extend(_lats)
 
-        trajectories_to_plot.append({
-            "label": f"Predicted: {name}",
-            "lons": _lons,
-            "lats": _lats,
-            "is_truth": False
-        })
+        trajectories_to_plot.append(
+            {"label": f"Predicted: {name}", "lons": _lons, "lats": _lats, "is_truth": False}
+        )
 
     # 4. Global map bounds calculation
     extent = _get_extent(
@@ -705,9 +689,7 @@ def plot_combined_experiment_trajectories(
     )
 
     # 5. Single Map Setup
-    fig, ax = plt.subplots(
-        1, 1, figsize=(12, 10), subplot_kw={"projection": ccrs.PlateCarree()}
-    )
+    fig, ax = plt.subplots(1, 1, figsize=(12, 10), subplot_kw={"projection": ccrs.PlateCarree()})
     ax = cast(GeoAxes, ax)
 
     _style_map_axis(ax, extent)
@@ -725,13 +707,13 @@ def plot_combined_experiment_trajectories(
             linewidth = 2.5
             zorder = 5  # Ensure truth is drawn on top
             alpha = 1.0
-            style = 'dashed'
+            style = "dashed"
         else:
             color = None  # Let matplotlib cycle through default colors
             linewidth = 1.5
             zorder = 4
             alpha = 0.8
-            style = 'solid'
+            style = "solid"
 
         # Iterate through the list of arrays just like in _plot_single_panel
         for i, (lons, lats) in enumerate(zip(track_lons, track_lats, strict=False)):
@@ -744,15 +726,25 @@ def plot_combined_experiment_trajectories(
                 linewidth=linewidth,
                 alpha=alpha,
                 zorder=zorder,
-                transform=ccrs.PlateCarree()
+                transform=ccrs.PlateCarree(),
             )
             # Start marker
             ax.scatter(
-                lons[0], lats[0], color="green", marker="o", transform=ccrs.PlateCarree(), zorder=zorder+1
+                lons[0],
+                lats[0],
+                color="green",
+                marker="o",
+                transform=ccrs.PlateCarree(),
+                zorder=zorder + 1,
             )
             # End marker
             ax.scatter(
-                lons[-1], lats[-1], color="red", marker="X", transform=ccrs.PlateCarree(), zorder=zorder+1
+                lons[-1],
+                lats[-1],
+                color="red",
+                marker="X",
+                transform=ccrs.PlateCarree(),
+                zorder=zorder + 1,
             )
 
     # Add legend outside the plot to avoid covering trajectories
@@ -765,7 +757,6 @@ def plot_combined_experiment_trajectories(
     plt.savefig(save_path, bbox_inches="tight", dpi=300)
     plt.close(fig)
     print(f"Combined trajectory plot saved to {save_path}")
-
 
 
 def plot_multi_experiment_speed_heatmaps(
@@ -832,11 +823,7 @@ def plot_multi_experiment_speed_heatmaps(
         )
 
     # 3. Process Ground Truth
-    process_dataset(
-        ds_path=data_config.original_res,
-        title="Ground Truth",
-        needs_slice=True
-    )
+    process_dataset(ds_path=data_config.original_res, title="Ground Truth", needs_slice=True)
 
     # 4. Process all requested ML Experiments
     # We infer the prediction filename from the exp_config to ensure we load the correct file
@@ -848,11 +835,7 @@ def plot_multi_experiment_speed_heatmaps(
         if not exp_pred_path.exists():
             raise FileNotFoundError(f"Could not find predicted dataset at {exp_pred_path}")
 
-        process_dataset(
-            ds_path=exp_pred_path,
-            title=f"Predicted: {name}",
-            needs_slice=False
-        )
+        process_dataset(ds_path=exp_pred_path, title=f"Predicted: {name}", needs_slice=False)
 
     # 5. Global map bounds calculation
     extent = _get_extent(
@@ -890,7 +873,7 @@ def plot_multi_experiment_speed_heatmaps(
     for i, ax_raw in enumerate(axes_flat):
         ax = cast(GeoAxes, ax_raw)
 
-        # Turn off axes that don't have data (e.g., the 6th panel in a 2x3 grid with only 5 datasets)
+        # Turn off axes that don't have data
         if i >= num_panels:
             ax.axis("off")
             continue
@@ -919,7 +902,7 @@ def plot_multi_experiment_speed_heatmaps(
         cbar.set_label("Speed", fontsize=12)
 
     # 8. Save out image
-    output_dir = Path("images") / 'comparison'
+    output_dir = Path("images") / "comparison"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     prefix = "zoomed_" if corners is not None else ""

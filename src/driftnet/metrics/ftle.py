@@ -1,7 +1,5 @@
-from pathlib import Path
 from typing import Any
 
-import matplotlib.pyplot as plt
 import polars as pl
 
 from driftnet.config import ExperimentConfig
@@ -85,13 +83,8 @@ def add_cross_field_lyapunov(
 
     df_lyap = df_lyap.with_columns(exponent_exprs)
 
-    agg_lyap_df = (
-        df_lyap.group_by("time")
-        .agg([pl.col("ML_Lyapunov_Exponent").mean()])
-        .sort("time")
-    )
+    agg_lyap_df = df_lyap.group_by("time").agg([pl.col("ML_Lyapunov_Exponent").mean()]).sort("time")
 
     append_mean_row(agg_lyap_df).write_csv(exp_config.metrics / "ftle.csv")
 
     return df_lyap, agg_lyap_df
-

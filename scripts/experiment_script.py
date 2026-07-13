@@ -25,7 +25,7 @@ def main():
     # Update the type hinting for experiments
     generate_experiment_types()
 
-    # # Code to run
+    # Code to run
     # train_downscale(config.hyperparameters, config.data, config.experiment)
 
     # inference_over_test_set(config.data, config.hyperparameters, config.experiment)

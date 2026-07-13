@@ -17,11 +17,6 @@ data:
     dir: "/gws/ssde/j25b/oxford_es/sbarnett/driftnet/images/degraded"
     factor: 5
 
-  # Renamed from linear_interp to interpolated to match the Python dataclass
-  interpolated:
-    dir: "/gws/ssde/j25b/oxford_es/sbarnett/driftnet/images/interpolated"
-    zarr_name: "mock_interpolated.zarr"
-
 
 # --- Model Hyperparameters ---
 hyperparameters:

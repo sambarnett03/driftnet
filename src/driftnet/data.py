@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import xarray as xr
 from numpy.typing import NDArray
 
-from driftnet.config import DataConfig, HyperparametersConfig
+from driftnet.config import DataConfig, HyperparametersConfig, ExperimentConfig
 from driftnet.ml.dataset import _read_indices_from_csv
 from driftnet.utils import get_spatial_trim_slices
 
@@ -316,6 +316,7 @@ def _compute_c_grid_divergence(
 
 def interpolate_zarr_store(
     data_config: DataConfig,
+    exp_config: ExperimentConfig,
     hyper_config: HyperparametersConfig,
 ) -> None:
     """
@@ -325,7 +326,7 @@ def interpolate_zarr_store(
     """
     degraded_zarr_path = data_config.degraded_res
     target_resolution_zarr = data_config.original_res
-    output_zarr_path = data_config.interpolated
+    output_zarr_path = exp_config.model_predictions
 
     # Open both datasets lazily (only reads metadata)
     ds_deg = xr.open_zarr(degraded_zarr_path)

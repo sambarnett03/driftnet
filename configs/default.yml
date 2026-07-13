@@ -1,7 +1,7 @@
 # --- Experiment Settings ---
 experiment:
-  exp_name: "interpolate"
-  trial_name: ""
+  exp_name: "bottleneckdim"
+  trial_name: "64"
   base: /gws/ssde/j25b/oxford_es/sbarnett/driftnet/experiments
 
 # --- Data & Preprocessing ---

@@ -4,16 +4,14 @@ import torch.nn.functional as F
 
 
 class DoubleConv(nn.Module):
-    """(convolution => [BN] => ReLU) * 2"""
+    """(convolution => ReLU) * 2 (Batch Norm removed)"""
 
     def __init__(self, in_channels, out_channels):
         super().__init__()
         self.double_conv = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=True),
             nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=True),
             nn.ReLU(inplace=True),
         )
 
@@ -54,29 +52,32 @@ class Up(nn.Module):
 
 
 class Strict5xOceanUNet(nn.Module):
-    def __init__(self, n_channels=2, n_classes=2, base_features=16):
+    def __init__(self, n_channels=2, n_classes=2, base_features=16, bottleneck_dim=256):
         """
         A U-Net designed to extract features at the low resolution (605x1072)
         and explicitly upsample by exactly 5x at the very end using PixelShuffle.
+        Includes a configurable bottleneck dimension for sensitivity analysis.
         """
         super().__init__()
         self.n_channels = n_channels
 
-        # --- Encoder (Operates at 605 x 1072) ---
+        # --- Encoder ---
         self.inc = DoubleConv(n_channels, base_features)
         self.down1 = Down(base_features, base_features * 2)
         self.down2 = Down(base_features * 2, base_features * 4)
         self.down3 = Down(base_features * 4, base_features * 8)
-        self.down4 = Down(base_features * 8, base_features * 16)
 
-        # --- Decoder (Operates at 605 x 1072) ---
-        self.up1 = Up(base_features * 16 + base_features * 8, base_features * 8)
+        # Modified to output the explicit bottleneck_dim
+        self.down4 = Down(base_features * 8, bottleneck_dim)
+
+        # --- Decoder ---
+        # up1 modified to accept the custom bottleneck_dim + the skip connection
+        self.up1 = Up(bottleneck_dim + base_features * 8, base_features * 8)
         self.up2 = Up(base_features * 8 + base_features * 4, base_features * 4)
         self.up3 = Up(base_features * 4 + base_features * 2, base_features * 2)
         self.up4 = Up(base_features * 2 + base_features, base_features)
 
         # --- Super Resolution Head ---
-        # Replaced ConvTranspose2d with PixelShuffle for a clean 5x upscale
         upscale_factor = 5
         mid_features = n_classes * (upscale_factor**2)  # 2 * 25 = 50 channels
 

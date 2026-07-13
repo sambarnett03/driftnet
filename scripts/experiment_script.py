@@ -3,7 +3,9 @@ import argparse
 from generate_types import generate_experiment_types
 from driftnet.config import MasterConfig
 from driftnet.utils import print_and_save_config
-from metrics.lagrange_diagnostics import evaluate_predictions
+from metrics.lagrange_diagnostics import evaluate_predictions, plot_metrics
+from ml.training_script import train_downscale
+from ml.inference_script import inference_over_test_set
 
 
 def main():
@@ -25,14 +27,14 @@ def main():
     # Update the type hinting for experiments
     generate_experiment_types()
 
-    # # Code to run
+    # Code to run
     # train_downscale(config.hyperparameters, config.data, config.experiment)
 
     # inference_over_test_set(config.data, config.hyperparameters, config.experiment)
 
-    evaluate_predictions(config.data, config.experiment)
+    # evaluate_predictions(config.data, config.experiment)
 
-
+    plot_metrics(config.data, config.experiment)
 
 if __name__ == "__main__":
     main()

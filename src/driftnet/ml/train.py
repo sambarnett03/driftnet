@@ -1,4 +1,5 @@
 import json
+import time
 
 import numpy as np
 import torch
@@ -115,6 +116,8 @@ def train_model(
     # --- 4. The Loop ---
     print("Starting training loop...")
     for epoch in range(1, hyper_config.epochs + 1):
+        start_time = time.time()
+
         train_loss = train_one_epoch(
             model,
             train_loader,
@@ -123,6 +126,9 @@ def train_model(
             device,
             micro_batch_size=hyper_config.micro_batch_size,
         )
+
+        print(f'train time for one epoch: {time.time() - start_time}')
+        print('-' * 20)
 
         val_loss = validate_one_epoch(
             model, val_loader, criterion, device, micro_batch_size=hyper_config.micro_batch_size

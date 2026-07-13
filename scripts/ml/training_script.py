@@ -33,7 +33,9 @@ def train_downscale(
     )
 
     # --- 3. Initialize Model, Loss, Optimizer ---
-    model = Strict5xOceanUNet(n_channels=2, n_classes=2, base_features=32)
+    model = Strict5xOceanUNet(
+        n_channels=2, n_classes=2, base_features=32, bottleneck_dim=int(str(exp_config.trial_name))
+    )
     model = model.to(device)
 
     print("Compiling model for A100 architecture optimization...")

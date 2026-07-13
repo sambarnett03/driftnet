@@ -5,7 +5,7 @@
 #SBATCH --qos=orchid
 #SBATCH -o /home/users/sbarnett/documents/driftnet/slurm_scripts/logs/output.%j.out # STDOUT
 #SBATCH -e /home/users/sbarnett/documents/driftnet/slurm_scripts/logs/output.%j.err
-#SBATCH --time=24:00:00              # Time limit (hh:mm:ss)
+#SBATCH --time=03:00:00              # Time limit (hh:mm:ss)
 #SBATCH --gres=gpu:1                 # Request 1 GPU
 #SBATCH --mem=200GB                    # Memory request
 #SBATCH --cpus-per-task=8          # CPU cores per task

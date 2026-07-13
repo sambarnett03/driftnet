@@ -7,11 +7,12 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
 from driftnet.ml.models import Strict5xOceanUNet
+from driftnet.config import ExperimentConfig
 
 
 @torch.inference_mode()
 def stream_inference(
-    test_set: Dataset, weights_path: Path, num_workers: int = 4
+    exp_config: ExperimentConfig, test_set: Dataset, weights_path: Path, num_workers: int = 4
 ) -> Iterator[tuple[np.ndarray, float]]:
     """
     Streams inference over the test dataset using the best saved model weights.
@@ -25,7 +26,7 @@ def stream_inference(
     print(f"Running inference on device: {device}")
 
     # Reconstruct and compile the model structure
-    model = Strict5xOceanUNet(n_channels=2, n_classes=2, base_features=32)
+    model = Strict5xOceanUNet(n_channels=2, n_classes=2, base_features=32, bottleneck_dim=int(str(exp_config.trial_name)))
     model = model.to(device)
 
     print("Compiling model for inference optimization...")

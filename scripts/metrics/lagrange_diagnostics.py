@@ -1,8 +1,11 @@
 from pathlib import Path
+import shutil
 
 import numpy as np
 import polars as pl
+from typing import Sequence
 
+from driftnet.generated_types import ExperimentPathType
 from driftnet.config import DataConfig, ExperimentConfig
 from driftnet.metrics.ftle import add_cross_field_lyapunov
 from driftnet.metrics.lagrange import (
@@ -39,8 +42,12 @@ def compute_trajectories(
     print(f"Dropping {len(start_lons)} particles into the domain...")
 
     # Run simulations
-    run_parcels_simulation(
-        "truth", fs_truth, start_lons, start_lats, start_times_array, runtime, out_dir
+    # run_parcels_simulation(
+    #     "truth", fs_truth, start_lons, start_lats, start_times_array, runtime, out_dir
+    # )
+    shutil.copytree(
+        '/gws/ssde/j25b/oxford_es/sbarnett/driftnet/experiments/default_experiment/baseline_trial/metrics/trajectories_truth.zarr',
+        exp_config.metrics / 'trajectories_truth.zarr'
     )
 
     run_parcels_simulation(
@@ -60,17 +67,36 @@ def save_metrics(data_config: DataConfig, exp_config: ExperimentConfig, _plot=Fa
 
 def plot_metrics(data_config: DataConfig, exp_config: ExperimentConfig):
     # Plot experiment results across all trials
-    plot_several_experiments(exp_config)
+    exp_names: list[ExperimentPathType] = [
+        'default_experiment/baseline_trial',
+        'interpolate/baseline_trial',
+        'pixelshuffle/baseline_trial',
+        # 'batchnorm/baseline_trial'
+    ]
+
+    # exp_names: list[ExperimentPathType] = [
+    #     'bottleneckdim/64',
+    #     'bottleneckdim/128',
+    #     'bottleneckdim/256',
+    #     'bottleneckdim/512',
+    #     'bottleneckdim/1024',
+    #     'interpolate/baseline_trial'
+    # ]
+
+    out_folder = Path('pixelshuffle')
+    plot_several_experiments(exp_config, exp_names=exp_names, out_folder=out_folder)
 
     # Plot trajectories
-    plot_multi_experiment_trajectories(exp_config)
-    plot_combined_experiment_trajectories(exp_config)
+    plot_multi_experiment_trajectories(exp_config, exp_names=exp_names, folder_name=out_folder)
+    plot_combined_experiment_trajectories(exp_config, exp_names=exp_names, folder_name=out_folder)
 
     # Plot heat map
     plot_multi_experiment_speed_heatmaps(
         data_config,
         exp_config,
-        corners=[40.0, 42.5, -20.0, -17.5]
+        exp_names=exp_names,
+        corners=[40.0, 42.5, -20.0, -17.5],
+        folder_name=out_folder
     )
 
 
@@ -101,7 +127,8 @@ def print_final_metrics(exp_config):
 
 
 def evaluate_predictions(data_config: DataConfig, exp_config: ExperimentConfig):
-    # compute_trajectories(data_config, exp_config)
-    # save_metrics(data_config, exp_config, _plot=True)
-    plot_metrics(data_config, exp_config)
+    compute_trajectories(data_config, exp_config)
+    save_metrics(data_config, exp_config, _plot=True)
     print_final_metrics(exp_config)
+    # plot_metrics(data_config, exp_config)
+

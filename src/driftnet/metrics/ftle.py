@@ -92,6 +92,8 @@ def add_cross_field_lyapunov(
     )
 
     append_mean_row(agg_lyap_df).write_csv(exp_config.metrics / "ftle.csv")
+    print(f'Saved FTLEs to {exp_config.metrics / "ftle.csv"}')
+
 
     return df_lyap, agg_lyap_df
 

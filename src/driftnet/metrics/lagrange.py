@@ -266,6 +266,7 @@ def get_connectivity_metrics(exp_config: ExperimentConfig) -> tuple[pl.DataFrame
     # Save the aggregated results
     Path("results").mkdir(parents=True, exist_ok=True)
     append_mean_row(agg_df).write_csv(exp_config.metrics / "distance.csv")
+    print(f'Saved Haversine distances to {exp_config.metrics / "distance.csv"}')
 
     return df_compare, agg_df
 

@@ -19,6 +19,7 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.quiver import Quiver
 from numpy.typing import ArrayLike, NDArray
+import matplotlib.colors as mcolors
 
 from driftnet.config import DataConfig, ExperimentConfig
 from driftnet.generated_types import ExperimentPathType
@@ -562,6 +563,7 @@ def plot_multi_experiment_trajectories(
     all_lats_combined: list[NDArray] = []
     processed_panels_data = []
 
+
     # 2. Extract Ground Truth
     # Assuming ground truth is identical across experiments, we pull it from the first one.
     truth_traj_path = Path(exp_config.base) / exp_names[0] / "metrics" / "trajectories_truth.zarr"
@@ -655,6 +657,9 @@ def plot_combined_experiment_trajectories(
     all_lons_combined: list[NDArray] = []
     all_lats_combined: list[NDArray] = []
 
+
+    colours = list(mcolors.TABLEAU_COLORS.values())
+
     # Store trajectory data to plot later: {"label": str, "lons": NDArray, "lats": NDArray}
     trajectories_to_plot = []
 
@@ -675,11 +680,12 @@ def plot_combined_experiment_trajectories(
         "label": "Ground Truth",
         "lons": t_lons,
         "lats": t_lats,
-        "is_truth": True
-    })
+        "is_truth": True,
+        "colour": 'black'
+   })
 
     # 3. Iterate over experiments and extract ML predictions
-    for name in exp_names:
+    for i, name in enumerate(exp_names):
         exp_traj_path = Path(exp_config.base) / name / "metrics" / "trajectories_ml_predicted.zarr"
 
         if not exp_traj_path.exists():
@@ -696,7 +702,8 @@ def plot_combined_experiment_trajectories(
             "label": f"Predicted: {name}",
             "lons": _lons,
             "lats": _lats,
-            "is_truth": False
+            "is_truth": False,
+            "colour": colours[i]
         })
 
     # 4. Global map bounds calculation
@@ -721,13 +728,11 @@ def plot_combined_experiment_trajectories(
 
         # Styling: Make ground truth stand out (e.g., thicker black line)
         if item["is_truth"]:
-            color = "black"
             linewidth = 2.5
             zorder = 5  # Ensure truth is drawn on top
             alpha = 1.0
             style = 'dashed'
         else:
-            color = None  # Let matplotlib cycle through default colors
             linewidth = 1.5
             zorder = 4
             alpha = 0.8
@@ -739,7 +744,7 @@ def plot_combined_experiment_trajectories(
                 lons,
                 lats,
                 label=label if i == 0 else None,  # Only add label once per experiment
-                color=color,
+                color=item['colour'],
                 linestyle=style,
                 linewidth=linewidth,
                 alpha=alpha,
@@ -919,7 +924,7 @@ def plot_multi_experiment_speed_heatmaps(
         cbar.set_label("Speed", fontsize=12)
 
     # 8. Save out image
-    output_dir = Path("images") / 'comparison'
+    output_dir = Path("images") / folder_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
     prefix = "zoomed_" if corners is not None else ""
@@ -937,7 +942,7 @@ def _plot_multi_experiment(
     folder_name: str | Path,
     file_name: str = "lagrangian_divergence_metrics",
 ):
-    os.makedirs(folder_name, exist_ok=True)
+    # os.makedirs(folder_name, exist_ok=True)
     # Initialize the plot with the same sizing as the reference
     plt.figure(figsize=(10, 6))
 
@@ -956,6 +961,7 @@ def _plot_multi_experiment(
         plt.title("FTLE from Ground Truth")
         plt.xlabel("Advection Time (Hours)")
         plt.ylabel("FTLE (km)")
+        plt.yscale('log', base=np.e)
 
     elif metric_name == "velocity_mse":
         plt.title("MSE in speeds from Ground Truth")
@@ -979,6 +985,7 @@ def plot_several_experiments(
     exp_config: ExperimentConfig,
     metrics_to_plot: Sequence[MetricType] | None = None,
     exp_names: Sequence[ExperimentPathType] | None = None,
+    out_folder: Path = Path("comparison")
 ):
 
     if exp_names is None:
@@ -1025,4 +1032,4 @@ def plot_several_experiments(
 
             data[name] = df[cfg["heading"]]
 
-        _plot_multi_experiment(data, time_hours, metric, Path("comparison"))
+        _plot_multi_experiment(data, time_hours, metric, out_folder)

@@ -26,7 +26,7 @@ def inference_over_test_set(
 
     # 1. Consume the generator batch-by-batch
     for preds_batch, batch_loss in stream_inference(
-        test_set=test_dataset, weights_path=exp_config.model_weights, num_workers=4
+        exp_config, test_set=test_dataset, weights_path=exp_config.model_weights, num_workers=4
     ):
         total_loss += batch_loss
         num_batches += 1

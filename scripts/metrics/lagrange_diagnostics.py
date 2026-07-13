@@ -1,4 +1,5 @@
 from pathlib import Path
+import shutil
 
 import numpy as np
 import polars as pl
@@ -39,8 +40,9 @@ def compute_trajectories(
     print(f"Dropping {len(start_lons)} particles into the domain...")
 
     # Run simulations
-    run_parcels_simulation(
-        "truth", fs_truth, start_lons, start_lats, start_times_array, runtime, out_dir
+    shutil.copytree(
+        '/gws/ssde/j25b/oxford_es/sbarnett/driftnet/experiments/default_experiment/baseline_trial/metrics/trajectories_truth.zarr',
+        exp_config.metrics / 'trajectories_truth.zarr'
     )
 
     run_parcels_simulation(

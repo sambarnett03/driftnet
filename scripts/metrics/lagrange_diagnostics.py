@@ -55,12 +55,12 @@ def save_metrics(data_config: DataConfig, exp_config: ExperimentConfig, _plot=Fa
 
     df_lyap, lyap_agg = add_cross_field_lyapunov(exp_config, df_compare, error_cols=["ML_Error_km"])
 
-    calculate_velocity_mse(data_config, exp_config)
+    # calculate_velocity_mse(data_config, exp_config)
 
 
 def plot_metrics(data_config: DataConfig, exp_config: ExperimentConfig):
     # Plot experiment results across all trials
-    plot_several_experiments(exp_config)
+    plot_several_experiments(exp_config, exp_names=['interpolate/normalise_trajectories'])
 
     # Plot trajectories
     plot_multi_experiment_trajectories(exp_config)
@@ -99,7 +99,7 @@ def print_final_metrics(exp_config):
 
 
 def evaluate_predictions(data_config: DataConfig, exp_config: ExperimentConfig):
-    # compute_trajectories(data_config, exp_config)
-    # save_metrics(data_config, exp_config, _plot=True)
+    compute_trajectories(data_config, exp_config)
+    save_metrics(data_config, exp_config, _plot=True)
     plot_metrics(data_config, exp_config)
     print_final_metrics(exp_config)

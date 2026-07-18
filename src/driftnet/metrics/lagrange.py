@@ -201,7 +201,7 @@ def _setup_test_particles(data_config: DataConfig, test_times: NDArray):
     y_idx, x_idx = np.where(valid_mask)
 
     # Subsample to track ~100 particles uniformly across the domain
-    step = max(1, len(y_idx) // 10)
+    step = max(1, len(y_idx) // 100000)
 
     # Release the particles at the correctly trimmed rho (cell center) locations
     start_lons = rho_lon[y_idx[::step], x_idx[::step]]
@@ -241,10 +241,40 @@ def get_connectivity_metrics(exp_config: ExperimentConfig) -> tuple[pl.DataFrame
         (pl.col("trajectory") - pl.col("trajectory").min()).alias("trajectory")
     )
 
-    # Merge on particle ID and Time
-    df_compare = df_truth.join(df_pred, on=["time", "trajectory"])
+    # Normalize trajectory IDs in case they drifted during simulation setup
+    df_pred = df_pred.with_columns(
+        (pl.col("trajectory") - pl.col("trajectory").min()).alias("trajectory")
+    )
 
-    # Calculate Haversine Distances
+    # 1. Filter out irregular deletion timestamps by intersecting unique times
+    unique_times_truth = df_truth.select("time").unique()
+    unique_times_pred = df_pred.select("time").unique()
+    shared_times = unique_times_truth.join(unique_times_pred, on="time", how="inner")
+
+    unique_trajectories = df_truth.select("trajectory").unique()
+
+    # Build the master grid using ONLY the synced, regular timesteps
+    base_grid = unique_trajectories.join(shared_times, how="cross")
+
+    # 2. Map truth data onto the complete grid and forward-fill missing coordinates
+    df_truth_full = base_grid.join(df_truth, on=["trajectory", "time"], how="left")
+    df_truth_full = df_truth_full.sort(["trajectory", "time"]).with_columns([
+        pl.col("lon_t").forward_fill().over("trajectory"),
+        pl.col("lat_t").forward_fill().over("trajectory")
+    ])
+
+    # 3. Map predicted data onto the complete grid and forward-fill missing coordinates
+    df_pred_full = base_grid.join(df_pred, on=["trajectory", "time"], how="left")
+    df_pred_full = df_pred_full.sort(["trajectory", "time"]).with_columns([
+        pl.col("lon_p").forward_fill().over("trajectory"),
+        pl.col("lat_p").forward_fill().over("trajectory")
+    ])
+
+
+    # 4. Merge the two fully populated dataframes
+    df_compare = df_truth_full.join(df_pred_full, on=["trajectory", "time"], how="inner")
+
+    # Calculate standard Haversine Distances
     ml_error = haversine_distance(
         df_compare["lon_t"].to_numpy(),
         df_compare["lat_t"].to_numpy(),
@@ -254,12 +284,9 @@ def get_connectivity_metrics(exp_config: ExperimentConfig) -> tuple[pl.DataFrame
 
     df_compare = df_compare.with_columns([pl.Series("ML_Error_km", ml_error)])
 
-    # Create the aggregated dataframe for time-series plotting
-    agg_df = (
-        df_compare.group_by("time")
-        .agg(pl.col("ML_Error_km").mean().alias("Mean_ML_Error"))
-        .sort("time")
-    )
+    df_compare = normalize_by_truth_distance(df_compare)
+
+    agg_df = calculate_aggregate_metrics(df_compare)
 
     # Save the aggregated results
     Path("results").mkdir(parents=True, exist_ok=True)
@@ -268,29 +295,66 @@ def get_connectivity_metrics(exp_config: ExperimentConfig) -> tuple[pl.DataFrame
     return df_compare, agg_df
 
 
-def plot_connectivity_results(
-    agg_df: pl.DataFrame, folder_name: str | Path, file_name: str = "lagrangian_divergence_metrics"
-):
+def normalize_by_truth_distance(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Calculates the cumulative distance travelled by the ground truth particle
+    and normalizes the ML separation error by this distance.
+    """
+    # 1. Get the previous timestep's coordinates for the truth trajectory
+    df = df.sort(["trajectory", "time"]).with_columns([
+        pl.col("lon_t").shift(1).over("trajectory").alias("lon_t_prev"),
+        pl.col("lat_t").shift(1).over("trajectory").alias("lat_t_prev"),
+    ])
 
-    time_hours = (agg_df["time"] - agg_df["time"][0]).dt.total_minutes() / 60.0
+    # 2. Fill nulls for the very first timestep (t=0) with the starting position
+    # so that the step distance at t=0 evaluates to exactly 0.0
+    df = df.with_columns([
+        pl.col("lon_t_prev").fill_null(pl.col("lon_t")),
+        pl.col("lat_t_prev").fill_null(pl.col("lat_t")),
+    ])
 
-    plt.figure(figsize=(10, 6))
-    plt.plot(time_hours, agg_df["Mean_ML_Error"], label="ML Super-Res", linewidth=2.5, color="red")
-    plt.plot(
-        time_hours,
-        agg_df["Mean_Interp_Error"],
-        label="Bilinear Interpolation",
-        linewidth=2.5,
-        color="blue",
-        linestyle="--",
+    # 3. Calculate the distance covered in this specific timestep
+    step_dist = haversine_distance(
+        df["lon_t"].to_numpy(),
+        df["lat_t"].to_numpy(),
+        df["lon_t_prev"].to_numpy(),
+        df["lat_t_prev"].to_numpy(),
     )
-    plt.title("Lagrangian Separation Distance from Ground Truth")
-    plt.xlabel("Advection Time (Hours)")
-    plt.ylabel("Mean Separation Distance (km)")
-    plt.legend()
-    plt.grid(True, linestyle=":", alpha=0.7)
 
-    Path(f"images/{folder_name}").mkdir(parents=True, exist_ok=True)
-    plot_path = f"images/{folder_name}/{file_name}.png"
-    plt.savefig(plot_path, bbox_inches="tight", dpi=300)
-    print(f"Metrics plot successfully saved to {plot_path}")
+    # 4. Add the step distance, compute cumulative sum, and normalize the error
+    df = (
+        df.with_columns(pl.Series("truth_step_dist_km", step_dist))
+        .with_columns(
+            pl.col("truth_step_dist_km").cum_sum().over("trajectory").alias("truth_cumulative_dist_km")
+        )
+        .with_columns(
+            # Avoid division by zero at t=0 or if a particle gets completely stuck
+            pl.when(pl.col("truth_cumulative_dist_km") > 0)
+            .then(pl.col("ML_Error_km") / pl.col("truth_cumulative_dist_km"))
+            .otherwise(0.0)
+            .alias("Normalized_ML_Error")
+        )
+    )
+
+    # Clean up the intermediate columns to keep the dataframe tidy
+    return df.drop(["lon_t_prev", "lat_t_prev", "truth_step_dist_km"])
+
+
+def calculate_aggregate_metrics(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Aggregates the trajectory data to calculate the mean, standard deviation,
+    and variance for both absolute and normalized errors per timestep.
+    """
+    return (
+        df.group_by("time")
+        .agg([
+            pl.col("ML_Error_km").mean().alias("Mean_ML_Error"),
+            pl.col("ML_Error_km").std().alias("Std_ML_Error"),
+            pl.col("ML_Error_km").var().alias("Var_ML_Error"),
+
+            pl.col("Normalized_ML_Error").mean().alias("Mean_Normalized_Error"),
+            pl.col("Normalized_ML_Error").std().alias("Std_Normalized_Error"),
+            pl.col("Normalized_ML_Error").var().alias("Var_Normalized_Error"),
+        ])
+        .sort("time")
+    )

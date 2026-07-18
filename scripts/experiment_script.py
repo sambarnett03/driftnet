@@ -1,7 +1,8 @@
 import argparse
 
 from generate_types import generate_experiment_types
-from metrics.lagrange_diagnostics import evaluate_predictions
+from metrics.lagrange_diagnostics import evaluate_predictions, save_metrics
+from driftnet.plotting import plot_several_experiments
 
 from driftnet.config import MasterConfig
 from driftnet.utils import print_and_save_config
@@ -32,7 +33,6 @@ def main():
     # inference_over_test_set(config.data, config.hyperparameters, config.experiment)
 
     evaluate_predictions(config.data, config.experiment)
-
 
 if __name__ == "__main__":
     main()

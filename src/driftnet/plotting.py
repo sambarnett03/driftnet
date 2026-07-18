@@ -958,6 +958,7 @@ def _plot_multi_experiment(
     plt.close()
 
 
+
 def plot_several_experiments(
     exp_config: ExperimentConfig,
     metrics_to_plot: Sequence[MetricType] | None = None,

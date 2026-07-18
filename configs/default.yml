@@ -1,7 +1,7 @@
 # --- Experiment Settings ---
 experiment:
   exp_name: "interpolate"
-  trial_name: ""
+  trial_name: "normalise_trajectories"
   base: /gws/ssde/j25b/oxford_es/sbarnett/driftnet/experiments
 
 # --- Data & Preprocessing ---

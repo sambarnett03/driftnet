@@ -25,7 +25,7 @@ JOB_DIR="../slurm_work/job_$TIMESTAMP"
 mkdir -p "$JOB_DIR"
 
 # 2. Copy your code and the Slurm script into that folder
-cp -R scripts slurm_scripts src "$JOB_DIR"
+cp -R configs scripts slurm_scripts src "$JOB_DIR"
 
 # 3. Move into that folder and submit the job
 cd "$JOB_DIR" || exit 1

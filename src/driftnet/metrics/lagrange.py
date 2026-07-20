@@ -185,7 +185,7 @@ def _setup_fieldsets(data_config: DataConfig, exp_config: ExperimentConfig, test
     return fs_truth, fs_pred
 
 
-def _setup_test_particles(data_config: DataConfig, test_times: NDArray):
+def _setup_test_particles(data_config: DataConfig, exp_config: ExperimentConfig, test_times: NDArray):
     x_slice, y_slice = _get_valid_spatial_slices(data_config)
 
     ds_orig_lazy = xr.open_zarr(data_config.original_res)
@@ -201,7 +201,7 @@ def _setup_test_particles(data_config: DataConfig, test_times: NDArray):
     y_idx, x_idx = np.where(valid_mask)
 
     # Subsample to track ~100 particles uniformly across the domain
-    step = max(1, len(y_idx) // 100000)
+    step = max(1, len(y_idx) // exp_config.particle_number)
 
     # Release the particles at the correctly trimmed rho (cell center) locations
     start_lons = rho_lon[y_idx[::step], x_idx[::step]]
@@ -227,6 +227,7 @@ def get_connectivity_metrics(exp_config: ExperimentConfig) -> tuple[pl.DataFrame
         pl.from_pandas(ds_truth.to_dataframe().reset_index())
         .rename({"lon": "lon_t", "lat": "lat_t"})
         .drop(["obs", "z"])
+        .with_columns(pl.col("trajectory").rank(method="dense").cast(pl.Int32))
     )
 
     df_pred = xr.open_zarr(pred_file)
@@ -234,16 +235,7 @@ def get_connectivity_metrics(exp_config: ExperimentConfig) -> tuple[pl.DataFrame
         pl.from_pandas(df_pred.to_dataframe().reset_index())
         .rename({"lon": "lon_p", "lat": "lat_p"})
         .drop(["obs", "z"])
-    )
-
-    # Normalize trajectory IDs in case they drifted during simulation setup
-    df_pred = df_pred.with_columns(
-        (pl.col("trajectory") - pl.col("trajectory").min()).alias("trajectory")
-    )
-
-    # Normalize trajectory IDs in case they drifted during simulation setup
-    df_pred = df_pred.with_columns(
-        (pl.col("trajectory") - pl.col("trajectory").min()).alias("trajectory")
+        .with_columns(pl.col("trajectory").rank(method="dense").cast(pl.Int32))
     )
 
     # 1. Filter out irregular deletion timestamps by intersecting unique times

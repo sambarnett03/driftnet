@@ -1,8 +1,9 @@
 # --- Experiment Settings ---
 experiment:
   exp_name: "interpolate"
-  trial_name: "normalise_trajectories"
+  trial_name: "100000particles"
   base: /gws/ssde/j25b/oxford_es/sbarnett/driftnet/experiments
+  particle_number: 100000
 
 # --- Data & Preprocessing ---
 data:

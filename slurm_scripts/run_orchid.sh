@@ -16,7 +16,8 @@ module load jaspy/3.12/v20250704
 source ~/my_venvs/driftnet_venv/bin/activate
 
 # 2. Navigate to the directory containing your script
-cd ~/documents/driftnet/
+cd "$SLURM_SUBMIT_DIR"
+
 
 export LD_LIBRARY_PATH=/apps/jasmin/jaspy/miniforge_envs/jaspy3.12/mf3-25.3.0-3/envs/jaspy3.12-mf3-25.3.0-3-v20250704/lib:$LD_LIBRARY_PATH
 

@@ -918,7 +918,6 @@ def _plot_multi_experiment(
     times: NDArray,
     metric_name: MetricType,
     folder_name: str | Path,
-    file_name: str = "lagrangian_divergence_metrics",
 ):
     os.makedirs(folder_name, exist_ok=True)
     # Initialize the plot with the same sizing as the reference
@@ -927,7 +926,7 @@ def _plot_multi_experiment(
     # Iterate through the dictionary to plot each experiment
     # The dictionary keys will act as the labels for the legend
     for label, values in data.items():
-        plt.plot(times, values, label=label, linewidth=2.5)
+        plt.plot(times[:400], values[:400], label=label, linewidth=2.5)
 
     # Apply standard styling, titles, and labels
     if metric_name == "euler_distance":
@@ -950,7 +949,7 @@ def _plot_multi_experiment(
 
     # Handle directory creation and saving the figure
     Path(f"images/{folder_name}").mkdir(parents=True, exist_ok=True)
-    plot_path = f"images/{folder_name}/{metric_name}.png"
+    plot_path = f"/home/users/sbarnett/documents/driftnet/images/{folder_name}/{metric_name}.png"
     plt.savefig(plot_path, bbox_inches="tight", dpi=300)
     print(f"Metrics plot successfully saved to {plot_path}")
 

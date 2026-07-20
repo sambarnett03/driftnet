@@ -1,4 +1,5 @@
 import shutil
+from collections.abc import Sequence
 
 import numpy as np
 import polars as pl
@@ -19,6 +20,8 @@ from driftnet.plotting import (
     plot_multi_experiment_trajectories,
     plot_several_experiments,
 )
+from driftnet.generated_types import ExperimentPathType
+
 
 
 def compute_trajectories(
@@ -36,13 +39,17 @@ def compute_trajectories(
     fs_truth, fs_pred = _setup_fieldsets(data_config, exp_config, test_times)
 
     # Choose starting locations (drop particles in valid open ocean, avoiding land)
-    start_lons, start_lats, start_times_array = _setup_test_particles(data_config, test_times)
+    start_lons, start_lats, start_times_array = _setup_test_particles(data_config, exp_config, test_times)
     print(f"Dropping {len(start_lons)} particles into the domain...")
 
     # Run simulations
-    shutil.copytree(
-        "/gws/ssde/j25b/oxford_es/sbarnett/driftnet/experiments/default_experiment/baseline_trial/metrics/trajectories_truth.zarr",
-        exp_config.metrics / "trajectories_truth.zarr",
+    # shutil.copytree(
+    #     "/gws/ssde/j25b/oxford_es/sbarnett/driftnet/experiments/default_experiment/baseline_trial/metrics/trajectories_truth.zarr",
+    #     exp_config.metrics / "trajectories_truth.zarr",
+    # )
+
+    run_parcels_simulation(
+        "truth", fs_truth, start_lons, start_lats, start_times_array, runtime, out_dir
     )
 
     run_parcels_simulation(
@@ -50,7 +57,7 @@ def compute_trajectories(
     )
 
 
-def save_metrics(data_config: DataConfig, exp_config: ExperimentConfig, _plot=False):
+def save_metrics(data_config: DataConfig, exp_config: ExperimentConfig):
     df_compare, df_agg = get_connectivity_metrics(exp_config)
 
     df_lyap, lyap_agg = add_cross_field_lyapunov(exp_config, df_compare, error_cols=["ML_Error_km"])
@@ -58,18 +65,21 @@ def save_metrics(data_config: DataConfig, exp_config: ExperimentConfig, _plot=Fa
     # calculate_velocity_mse(data_config, exp_config)
 
 
-def plot_metrics(data_config: DataConfig, exp_config: ExperimentConfig):
+def plot_metrics(data_config: DataConfig, exp_config: ExperimentConfig,
+                 exp_names: Sequence[ExperimentPathType] | None = None):
+
     # Plot experiment results across all trials
-    plot_several_experiments(exp_config, exp_names=['interpolate/normalise_trajectories'])
+    plot_several_experiments(exp_config, exp_names=exp_names,
+                             metrics_to_plot=['euler_distance', 'ftle'])
 
     # Plot trajectories
-    plot_multi_experiment_trajectories(exp_config)
-    plot_combined_experiment_trajectories(exp_config)
+    # plot_multi_experiment_trajectories(exp_config, exp_names)
+    # plot_combined_experiment_trajectories(exp_config, exp_names)
 
     # Plot heat map
-    plot_multi_experiment_speed_heatmaps(
-        data_config, exp_config, corners=[40.0, 42.5, -20.0, -17.5]
-    )
+    # plot_multi_experiment_speed_heatmaps(
+    #     data_config, exp_config, corners=[40.0, 42.5, -20.0, -17.5],
+    # )
 
 
 def print_final_metrics(exp_config):
@@ -100,6 +110,13 @@ def print_final_metrics(exp_config):
 
 def evaluate_predictions(data_config: DataConfig, exp_config: ExperimentConfig):
     compute_trajectories(data_config, exp_config)
-    save_metrics(data_config, exp_config, _plot=True)
-    plot_metrics(data_config, exp_config)
-    print_final_metrics(exp_config)
+    save_metrics(data_config, exp_config)
+    print('metrics saved')
+    exp_names : Sequence[ExperimentPathType]
+    exp_names = ['interpolate/100particles',
+                 'interpolate/10particles',
+                 'interpolate/1000particles',
+                 'interpolate/10000particles',
+                 'interpolate/50000particles']
+    # plot_metrics(data_config, exp_config, exp_names)
+    # print_final_metrics(exp_config)

@@ -1,4 +1,6 @@
 import argparse
+import shutil
+import os
 
 from generate_types import generate_experiment_types
 from metrics.lagrange_diagnostics import evaluate_predictions, save_metrics
@@ -32,6 +34,11 @@ def main():
 
     # inference_over_test_set(config.data, config.hyperparameters, config.experiment)
 
+    # os.makedirs(config.experiment.base, exist_ok=True)
+    # shutil.copytree('/gws/ssde/j25b/oxford_es/sbarnett/driftnet/experiments/interpolate/baseline_trial/predictions.zarr',
+    #                 config.experiment.model_predictions)
+
+    print('predictions copied')
     evaluate_predictions(config.data, config.experiment)
 
 if __name__ == "__main__":

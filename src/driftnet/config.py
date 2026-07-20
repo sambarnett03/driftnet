@@ -7,6 +7,7 @@ import yaml
 
 @dataclass
 class ExperimentConfig:
+    particle_number: int
     exp_name: str | Path = ""
     trial_name: str | Path = "baseline_trial"
     base: str = ""
@@ -35,6 +36,8 @@ class ExperimentConfig:
         self.model_weights = self.base_path / "model_data" / "best_weights.pth"
         self.model_predictions = self.base_path / "predictions.zarr"
         self.metrics = self.base_path / "metrics"
+
+        self.particle_number = self.particle_number
 
     def __getitem__(self, key):
         return getattr(self, key)

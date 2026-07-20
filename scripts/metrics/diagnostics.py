@@ -54,6 +54,7 @@ def save_metrics(
         # calculate_velocity_mse(data_config, current_exp_config)
 
         # 3. Spectral Metrics
+        print('Calculating FFT')
         write_spectra_to_csv(data_config, current_exp_config)
 
     print("\nAll metrics across all experiments successfully saved!")

@@ -2,11 +2,11 @@
 #SBATCH --job-name=lotus_downscale
 #SBATCH --account=oxford_es
 #SBATCH --partition=standard
-#SBATCH --qos=standard
+#SBATCH --qos=short
 #SBATCH -o /home/users/sbarnett/documents/driftnet/slurm_scripts/logs/output.%j.out # STDOUT
 #SBATCH -e /home/users/sbarnett/documents/driftnet/slurm_scripts/logs/output.%j.err
-#SBATCH --time=00:30:00              # Time limit (hh:mm:ss)
-#SBATCH --mem=8GB                    # Memory request
+#SBATCH --time=01:00:00              # Time limit (hh:mm:ss)
+#SBATCH --mem=200GB                    # Memory request
 
 
 # 1. Set up the environment

@@ -33,11 +33,11 @@ def generate_experiment_types(
 
         if experiment_paths:
             path_literals = ", ".join(f'"{p}"' for p in experiment_paths)
-            f.write(f"ExperimentPathType = Literal[{path_literals}]\n")
+            f.write(f"ExperimentPathType = Literal[{path_literals}]")
         else:
-            f.write("ExperimentPathType = str\n")
+            f.write("ExperimentPathType = str")
 
-        f.write("# type: ignore")
+        f.write(" # type: ignore\n")
 
     print(f"Successfully updated combined types in {target_file}!")
 

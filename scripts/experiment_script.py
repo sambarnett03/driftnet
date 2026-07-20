@@ -7,6 +7,7 @@ from metrics.diagnostics import save_metrics, plot_metrics
 
 from driftnet.config import MasterConfig
 from driftnet.utils import print_and_save_config
+from driftnet.metrics.lagrange import compute_trajectories
 from driftnet.generated_types import ExperimentPathType
 
 
@@ -31,10 +32,12 @@ def main():
 
     # Code to run
     exp_names : Sequence[ExperimentPathType]
-    exp_names = ['default_experiment/baseline_trial', 'interpolate/baseline_trial',
-                 'pixelshuffle/baseline_trial']
+    exp_names = ['interpolate/100particles',
+                 'interpolate/1000particles', 'interpolate/10000particles',
+                 'interpolate/50000particles', 'interpolate/100000particles']
 
-    save_metrics(config.data, config.experiment, exp_names)
+    # compute_trajectories(config.data, config.experiment, exp_names)
+    save_metrics(config.data, config.experiment, exp_names=['interpolate/100000particles'])
     plot_metrics(config.data, config.experiment, exp_names)
 
 

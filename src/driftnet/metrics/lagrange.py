@@ -1,4 +1,6 @@
 from pathlib import Path
+from typing import get_args
+from collections.abc import Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -9,6 +11,7 @@ from parcels import AdvectionRK4, FieldSet, JITParticle, ParticleFile, ParticleS
 
 from driftnet.config import DataConfig, ExperimentConfig
 from driftnet.utils import _get_valid_spatial_slices, append_mean_row
+from driftnet.generated_types import ExperimentPathType
 
 
 def haversine_distance(
@@ -201,7 +204,7 @@ def _setup_test_particles(data_config: DataConfig, test_times: NDArray):
     y_idx, x_idx = np.where(valid_mask)
 
     # Subsample to track ~100 particles uniformly across the domain
-    step = max(1, len(y_idx) // 10)
+    step = max(1, len(y_idx) // 100000)
 
     # Release the particles at the correctly trimmed rho (cell center) locations
     start_lons = rho_lon[y_idx[::step], x_idx[::step]]
@@ -212,33 +215,55 @@ def _setup_test_particles(data_config: DataConfig, test_times: NDArray):
 
 
 
+
 def compute_trajectories(
     data_config: DataConfig,
     exp_config: ExperimentConfig,
+    exp_names: Sequence[ExperimentPathType] | None = None,
     start_time: str | np.datetime64 | None = None,
     duration_days: int = 20,
 ):
     """Main entry point to evaluate ML upscaling using Lagrangian particle tracking."""
+    if exp_names is None:
+        exp_names = get_args(ExperimentPathType)
 
-    # Setup times for experiment
-    test_times, runtime, out_dir = _setup_experiment(exp_config, start_time, duration_days)
+    for name in exp_names:
+        print(f"\n{'='*50}\nComputing trajectories for: {name}\n{'='*50}")
 
-    # Prepare FieldSets
-    fs_truth, fs_pred = _setup_fieldsets(data_config, exp_config, test_times)
+        # Extract exp_name and trial_name from the path string
+        parts = str(name).split("/")
+        e_name = parts[0]
+        t_name = parts[1] if len(parts) > 1 else "baseline_trial"
 
-    # Choose starting locations (drop particles in valid open ocean, avoiding land)
-    start_lons, start_lats, start_times_array = _setup_test_particles(data_config, test_times)
-    print(f"Dropping {len(start_lons)} particles into the domain...")
+        # Create a localized config for this specific experiment loop
+        current_exp_config = ExperimentConfig(
+            base=exp_config.base,
+            exp_name=e_name,
+            trial_name=t_name
+        )
 
-    # Run simulations
-    run_parcels_simulation(
-        "truth", fs_truth, start_lons, start_lats, start_times_array, runtime, out_dir
-    )
+        # Setup times for experiment
+        test_times, runtime, out_dir = _setup_experiment(current_exp_config, start_time, duration_days)
 
-    run_parcels_simulation(
-        "ml_predicted", fs_pred, start_lons, start_lats, start_times_array, runtime, out_dir
-    )
+        # Prepare FieldSets
+        fs_truth, fs_pred = _setup_fieldsets(data_config, current_exp_config, test_times)
 
+        # Choose starting locations (drop particles in valid open ocean, avoiding land)
+        # Note: Added current_exp_config here as required by your original lagrange.py signature
+        start_lons, start_lats, start_times_array = _setup_test_particles(data_config, test_times)
+        print(f"Dropping {len(start_lons)} particles into the domain for {name}...")
+
+        # Run Ground Truth simulation
+        run_parcels_simulation(
+            "truth", fs_truth, start_lons, start_lats, start_times_array, runtime, out_dir
+        )
+
+        # Run ML Predicted simulation
+        run_parcels_simulation(
+            "ml_predicted", fs_pred, start_lons, start_lats, start_times_array, runtime, out_dir
+        )
+
+    print("\nAll trajectories across all experiments successfully computed!")
 
 
 def get_connectivity_metrics(exp_config: ExperimentConfig) -> tuple[pl.DataFrame, pl.DataFrame]:

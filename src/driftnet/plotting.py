@@ -918,7 +918,6 @@ def _plot_multi_experiment(
     metric_name: MetricType,
     folder_name: str | Path,
 ):
-    os.makedirs(folder_name, exist_ok=True)
     # Initialize the plot with the same sizing as the reference
     plt.figure(figsize=(10, 6))
 
@@ -947,7 +946,8 @@ def _plot_multi_experiment(
 
     # Handle directory creation and saving the figure
     Path(f"images/{folder_name}").mkdir(parents=True, exist_ok=True)
-    plot_path = f"/home/users/sbarnett/documents/driftnet/images/{folder_name}/{metric_name}.png"
+    plot_path = Path(f"/home/users/sbarnett/documents/driftnet/images/{folder_name}/{metric_name}.png")
+    os.makedirs(plot_path.parent, exist_ok=True)
     plt.savefig(plot_path, bbox_inches="tight", dpi=300)
     print(f"Metrics plot successfully saved to {plot_path}")
 

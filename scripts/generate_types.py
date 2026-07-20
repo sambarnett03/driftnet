@@ -1,7 +1,10 @@
 from pathlib import Path
 
 
-def generate_experiment_types(target_file: str = "src/driftnet/generated_types.py"):
+def generate_experiment_types(
+        target_file:
+        str = "/home/users/sbarnett/documents/driftnet/src/driftnet/generated_types.py"
+    ):
     base_dir = Path("/gws/ssde/j25b/oxford_es/sbarnett/driftnet/experiments")
 
     if not base_dir.exists():
@@ -33,6 +36,8 @@ def generate_experiment_types(target_file: str = "src/driftnet/generated_types.p
             f.write(f"ExperimentPathType = Literal[{path_literals}]\n")
         else:
             f.write("ExperimentPathType = str\n")
+
+        f.write("# type: ignore")
 
     print(f"Successfully updated combined types in {target_file}!")
 

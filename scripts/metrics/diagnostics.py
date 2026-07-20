@@ -1,18 +1,9 @@
-import shutil
-from collections.abc import Sequence
-
-import numpy as np
 import polars as pl
+from collections.abc import Sequence
 
 from driftnet.config import DataConfig, ExperimentConfig
 from driftnet.metrics.ftle import add_cross_field_lyapunov
-from driftnet.metrics.lagrange import (
-    _setup_experiment,
-    _setup_fieldsets,
-    _setup_test_particles,
-    get_connectivity_metrics,
-    run_parcels_simulation,
-)
+from driftnet.metrics.lagrange import get_connectivity_metrics
 from driftnet.metrics.mse import calculate_velocity_mse
 from driftnet.plotting import (
     plot_combined_experiment_trajectories,
@@ -22,41 +13,51 @@ from driftnet.plotting import (
 )
 from driftnet.generated_types import ExperimentPathType
 
+from driftnet.metrics.spectrum import write_spectra_to_csv
+from driftnet.generated_types import ExperimentPathType
 
-def compute_trajectories(
+
+
+
+def save_metrics(
     data_config: DataConfig,
     exp_config: ExperimentConfig,
-    start_time: str | np.datetime64 | None = None,
-    duration_days: int = 20,
+    exp_names: Sequence[ExperimentPathType]
 ):
-    """Main entry point to evaluate ML upscaling using Lagrangian particle tracking."""
+    """
+    Iterates over all specified experiments and saves their respective metrics.
+    """
+    for name in exp_names:
+        print(f"\n{'='*50}\nComputing metrics for: {name}\n{'='*50}")
 
-    # Setup times for experiment
-    test_times, runtime, out_dir = _setup_experiment(exp_config, start_time, duration_days)
+        # Extract exp_name and trial_name from the path string (e.g., "interpolate/100000particles")
+        parts = str(name).split("/")
+        e_name = parts[0]
+        t_name = parts[1] if len(parts) > 1 else "baseline_trial"
 
-    # Prepare FieldSets
-    fs_truth, fs_pred = _setup_fieldsets(data_config, exp_config, test_times)
+        # Create a localized config for this specific experiment loop
+        current_exp_config = ExperimentConfig(
+            base=exp_config.base,
+            exp_name=e_name,
+            trial_name=t_name
+        )
 
-    # Choose starting locations (drop particles in valid open ocean, avoiding land)
-    start_lons, start_lats, start_times_array = _setup_test_particles(data_config, test_times)
-    print(f"Dropping {len(start_lons)} particles into the domain...")
+        # 1. Lagrangian Metrics
+        print("Calculating Lagrangian connectivity metrics...")
+        df_compare, df_agg = get_connectivity_metrics(current_exp_config)
 
-    # Run simulations
-    run_parcels_simulation(
-        "truth", fs_truth, start_lons, start_lats, start_times_array, runtime, out_dir
-    )
+        print("Calculating FTLE...")
+        df_lyap, lyap_agg = add_cross_field_lyapunov(current_exp_config, df_compare, error_cols=["ML_Error_km"])
 
-    run_parcels_simulation(
-        "ml_predicted", fs_pred, start_lons, start_lats, start_times_array, runtime, out_dir
-    )
+        # 2. Eulerian Metrics
+        # print("Calculating Eulerian velocity MSE...")
+        # calculate_velocity_mse(data_config, current_exp_config)
 
+        # 3. Spectral Metrics
+        write_spectra_to_csv(data_config, current_exp_config)
 
-def save_metrics(data_config: DataConfig, exp_config: ExperimentConfig):
-    df_compare, df_agg = get_connectivity_metrics(exp_config)
+    print("\nAll metrics across all experiments successfully saved!")
 
-    df_lyap, lyap_agg = add_cross_field_lyapunov(exp_config, df_compare, error_cols=["ML_Error_km"])
-
-    calculate_velocity_mse(data_config, exp_config)
 
 
 def plot_metrics(data_config: DataConfig, exp_config: ExperimentConfig,
@@ -64,7 +65,8 @@ def plot_metrics(data_config: DataConfig, exp_config: ExperimentConfig,
 
     # Plot experiment results across all trials
     plot_several_experiments(exp_config, exp_names=exp_names,
-                             metrics_to_plot=['euler_distance', 'ftle'])
+                             metrics_to_plot=['euler_distance', 'ftle',
+                                              'kinetic_energy_spectrum'])
 
     # Plot trajectories
     # plot_multi_experiment_trajectories(exp_config, exp_names)
@@ -74,6 +76,8 @@ def plot_metrics(data_config: DataConfig, exp_config: ExperimentConfig,
     # plot_multi_experiment_speed_heatmaps(
     #     data_config, exp_config, corners=[40.0, 42.5, -20.0, -17.5],
     # )
+
+
 
 
 def print_final_metrics(exp_config):

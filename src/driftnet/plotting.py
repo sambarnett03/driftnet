@@ -28,7 +28,7 @@ BoundsLike = Sequence[float]
 CornerPoint = tuple[float, float]
 CornerPoints = Sequence[CornerPoint]
 Corners = BoundsLike | CornerPoints
-MetricType = Literal["euler_distance", "ftle", "velocity_mse"]
+MetricType = Literal["euler_distance", "ftle", "velocity_mse", "kinetic_energy_spectrum"]
 
 
 def _parse_corners(corners: Corners | None | str) -> Bounds | None | str:
@@ -912,10 +912,9 @@ def plot_multi_experiment_speed_heatmaps(
     plt.close(fig)
     print(f"Dynamic speed heatmap saved to {save_path}")
 
-
 def _plot_multi_experiment(
     data: dict,
-    times: NDArray,
+    x_values: np.ndarray,
     metric_name: MetricType,
     folder_name: str | Path,
 ):
@@ -924,9 +923,8 @@ def _plot_multi_experiment(
     plt.figure(figsize=(10, 6))
 
     # Iterate through the dictionary to plot each experiment
-    # The dictionary keys will act as the labels for the legend
     for label, values in data.items():
-        plt.plot(times[:400], values[:400], label=label, linewidth=2.5)
+        plt.plot(x_values[:400], values[:400], label=label, linewidth=2.5)
 
     # Apply standard styling, titles, and labels
     if metric_name == "euler_distance":
@@ -937,7 +935,7 @@ def _plot_multi_experiment(
     elif metric_name == "ftle":
         plt.title("FTLE from Ground Truth")
         plt.xlabel("Advection Time (Hours)")
-        plt.ylabel("FTLE (km)")
+        plt.ylabel("FTLE (days$^{-1}$)")
 
     elif metric_name == "velocity_mse":
         plt.title("MSE in speeds from Ground Truth")
@@ -957,13 +955,68 @@ def _plot_multi_experiment(
     plt.close()
 
 
+def _plot_kinetic_energy_spectrum(
+    data: dict,
+    x_values: np.ndarray,
+    metric_name: MetricType,
+    folder_name: str | Path,
+):
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import ScalarFormatter
+
+    os.makedirs(folder_name, exist_ok=True)
+
+    # x_values represents wavenumbers here. Ignore k=0 to prevent log(0) errors.
+    valid = x_values > 0
+    k = x_values[valid]
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    # Iterate through the dictionary to plot each experiment and the Ground Truth
+    for label, values in data.items():
+        vals = np.array(values)[valid]
+        if label == "Ground Truth":
+            ax.loglog(k, vals, label=label, color="black", linewidth=2.5)
+        else:
+            ax.loglog(k, vals, label=label, linestyle="--", linewidth=1.5)
+
+    ax.set_title("Kinetic Energy Spectrum", fontsize=14, pad=15)
+    ax.set_xlabel("Wavenumber, $k$ (cycles / m)", fontsize=12)
+    ax.set_ylabel("Kinetic Energy Density", fontsize=12)
+    ax.grid(True, which="both", linestyle=":", alpha=0.6)
+
+    # Place legend outside so it doesn't cover the spectrum lines
+    ax.legend(fontsize=10, bbox_to_anchor=(1.05, 1), loc='upper left')
+
+    # --- Add a secondary top axis for Wavelength in km ---
+    def k_to_km(k_val):
+        k_val = np.asarray(k_val, dtype=float)
+        with np.errstate(divide='ignore'):
+            return np.where(k_val == 0, np.inf, 1.0 / (k_val * 1000.0))
+
+    def km_to_k(km_val):
+        km_val = np.asarray(km_val, dtype=float)
+        with np.errstate(divide='ignore'):
+            return np.where(km_val == 0, np.inf, 1.0 / (km_val * 1000.0))
+
+    secax = ax.secondary_xaxis('top', functions=(k_to_km, km_to_k))
+    secax.set_xlabel("Wavelength (km)", fontsize=12)
+    secax.set_xticks([10, 50, 100, 500])
+    secax.xaxis.set_major_formatter(ScalarFormatter())
+
+    # Handle directory creation and saving the figure
+    Path(f"images/{folder_name}").mkdir(parents=True, exist_ok=True)
+    plot_path = f"/home/users/sbarnett/documents/driftnet/images/{folder_name}/{metric_name}.png"
+    plt.savefig(plot_path, bbox_inches="tight", dpi=300)
+    print(f"Metrics plot successfully saved to {plot_path}")
+    plt.close()
+
 
 def plot_several_experiments(
     exp_config: ExperimentConfig,
     metrics_to_plot: Sequence[MetricType] | None = None,
     exp_names: Sequence[ExperimentPathType] | None = None,
 ):
-
     if exp_names is None:
         exp_names = get_args(ExperimentPathType)
 
@@ -973,15 +1026,29 @@ def plot_several_experiments(
     metric_registry = {
         "euler_distance": {
             "csv_name": "distance.csv",
-            "title": "Distance between particles",
             "heading": "Mean_ML_Error",
+            "x_col": "time",
+            "plot_fn": _plot_multi_experiment
         },
-        "ftle": {"csv_name": "ftle.csv", "title": "FTLE", "heading": "ML_Lyapunov_Exponent"},
+        "ftle": {
+            "csv_name": "ftle.csv",
+            "heading": "ML_Lyapunov_Exponent",
+            "x_col": "time",
+            "plot_fn": _plot_multi_experiment
+        },
         "velocity_mse": {
             "csv_name": "velocity_mse.csv",
-            "title": "FTLE",
             "heading": "MSE_speed_ML",
+            "x_col": "time",
+            "plot_fn": _plot_multi_experiment
         },
+        "kinetic_energy_spectrum": {
+            "csv_name": "spectrum.csv",
+            "heading": "KE_pred",
+            "truth_heading": "KE_truth",  # Special column reserved for the ground truth
+            "x_col": "wavenumber",        # Changes how x_values are parsed
+            "plot_fn": _plot_kinetic_energy_spectrum
+        }
     }
 
     for metric in metrics_to_plot:
@@ -991,7 +1058,7 @@ def plot_several_experiments(
         cfg = metric_registry[metric]
 
         data = {}
-        time_hours = np.array([])
+        x_values = np.array([])
 
         for i, name in enumerate(exp_names):
             file_path = Path(exp_config.base) / name / "metrics" / cfg["csv_name"]
@@ -1001,11 +1068,19 @@ def plot_several_experiments(
 
             df = pl.read_csv(file_path)
 
-            if i == 0:  # calculate times (only need to do this once since all same)
-                df = df.with_columns(pl.col("time").str.to_datetime(strict=False))
+            if i == 0:  # Calculate the x-axis values once
+                if cfg["x_col"] == "time":
+                    df_time = df.with_columns(pl.col("time").str.to_datetime(strict=False))
+                    x_values = ((df_time["time"] - df_time["time"][0]).dt.total_minutes() / 60.0).to_numpy()
+                else:
+                    x_values = df[cfg["x_col"]].to_numpy()
 
-                time_hours = (df["time"] - df["time"][0]).dt.total_minutes() / 60.0
+                # If the metric includes a ground truth column in the CSV, add it!
+                if "truth_heading" in cfg and cfg["truth_heading"] in df.columns:
+                    data["Ground Truth"] = df[cfg["truth_heading"]].to_numpy()
 
-            data[name] = df[cfg["heading"]]
+            data[name] = df[cfg["heading"]].to_numpy()
 
-        _plot_multi_experiment(data, time_hours, metric, Path("comparison"))
+        # Dispatch to the specific plotting function defined in the registry
+        plot_fn = cfg.get("plot_fn", _plot_multi_experiment)
+        plot_fn(data, x_values, metric, Path("comparison"))

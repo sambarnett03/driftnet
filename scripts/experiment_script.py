@@ -1,10 +1,13 @@
 import argparse
+from pathlib import Path
+from collections.abc import Sequence
 
 from generate_types import generate_experiment_types
-from metrics.lagrange_diagnostics import evaluate_predictions
+from metrics.diagnostics import save_metrics, plot_metrics
 
 from driftnet.config import MasterConfig
 from driftnet.utils import print_and_save_config
+from driftnet.generated_types import ExperimentPathType
 
 
 def main():
@@ -27,11 +30,12 @@ def main():
     generate_experiment_types()
 
     # Code to run
-    # train_downscale(config.hyperparameters, config.data, config.experiment)
+    exp_names : Sequence[ExperimentPathType]
+    exp_names = ['default_experiment/baseline_trial', 'interpolate/baseline_trial',
+                 'pixelshuffle/baseline_trial']
 
-    # inference_over_test_set(config.data, config.hyperparameters, config.experiment)
-
-    evaluate_predictions(config.data, config.experiment)
+    save_metrics(config.data, config.experiment, exp_names)
+    plot_metrics(config.data, config.experiment, exp_names)
 
 
 if __name__ == "__main__":

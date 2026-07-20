@@ -211,6 +211,36 @@ def _setup_test_particles(data_config: DataConfig, test_times: NDArray):
     return start_lons, start_lats, start_times_array
 
 
+
+def compute_trajectories(
+    data_config: DataConfig,
+    exp_config: ExperimentConfig,
+    start_time: str | np.datetime64 | None = None,
+    duration_days: int = 20,
+):
+    """Main entry point to evaluate ML upscaling using Lagrangian particle tracking."""
+
+    # Setup times for experiment
+    test_times, runtime, out_dir = _setup_experiment(exp_config, start_time, duration_days)
+
+    # Prepare FieldSets
+    fs_truth, fs_pred = _setup_fieldsets(data_config, exp_config, test_times)
+
+    # Choose starting locations (drop particles in valid open ocean, avoiding land)
+    start_lons, start_lats, start_times_array = _setup_test_particles(data_config, test_times)
+    print(f"Dropping {len(start_lons)} particles into the domain...")
+
+    # Run simulations
+    run_parcels_simulation(
+        "truth", fs_truth, start_lons, start_lats, start_times_array, runtime, out_dir
+    )
+
+    run_parcels_simulation(
+        "ml_predicted", fs_pred, start_lons, start_lats, start_times_array, runtime, out_dir
+    )
+
+
+
 def get_connectivity_metrics(exp_config: ExperimentConfig) -> tuple[pl.DataFrame, pl.DataFrame]:
     """
     Computes trajectory divergence metrics.

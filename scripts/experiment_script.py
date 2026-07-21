@@ -32,12 +32,13 @@ def main():
 
     # Code to run
     exp_names : Sequence[ExperimentPathType]
-    exp_names = ['interpolate/100particles',
-                 'interpolate/1000particles', 'interpolate/10000particles',
-                 'interpolate/50000particles', 'interpolate/100000particles']
+    exp_names = ['default_experiment/baseline_trial',
+                 'pixelshuffle/baseline_trial',
+                 'batchnorm/baseline_trial',
+                 'interpolate/normalise_trajectories']
 
     # compute_trajectories(config.data, config.experiment, exp_names)
-    save_metrics(config.data, config.experiment, exp_names=['interpolate/100000particles'])
+    save_metrics(config.data, config.experiment, exp_names)
     plot_metrics(config.data, config.experiment, exp_names)
 
 

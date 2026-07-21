@@ -28,7 +28,8 @@ BoundsLike = Sequence[float]
 CornerPoint = tuple[float, float]
 CornerPoints = Sequence[CornerPoint]
 Corners = BoundsLike | CornerPoints
-MetricType = Literal["euler_distance", "ftle", "velocity_mse", "kinetic_energy_spectrum"]
+MetricType = Literal["euler_distance", "ftle", "velocity_mse", "kinetic_energy_spectrum",
+                     "velocity_nmse"]
 
 
 def _parse_corners(corners: Corners | None | str) -> Bounds | None | str:
@@ -941,6 +942,11 @@ def _plot_multi_experiment(
         plt.xlabel("Advection Time (Hours)")
         plt.ylabel("Mean Square Error ($ms^{-1}$)")
 
+    elif metric_name == "velocity_nmse":
+        plt.title("Normalised MSE in speeds from Ground Truth")
+        plt.xlabel("Advection Time (Hours)")
+        plt.ylabel("Normalised Mean Square Error")
+
     plt.legend()
     plt.grid(True, linestyle=":", alpha=0.7)
 
@@ -1048,7 +1054,13 @@ def plot_several_experiments(
             "truth_heading": "KE_truth",  # Special column reserved for the ground truth
             "x_col": "wavenumber",        # Changes how x_values are parsed
             "plot_fn": _plot_kinetic_energy_spectrum
-        }
+        },
+        "velocity_nmse": {
+            "csv_name": "velocity_mse.csv",
+            "heading": "NMSE_speed_ML",  # Points to our new Normalized column
+            "x_col": "time",
+            "plot_fn": _plot_multi_experiment
+        },
     }
 
     for metric in metrics_to_plot:

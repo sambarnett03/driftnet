@@ -50,8 +50,8 @@ def save_metrics(
         df_lyap, lyap_agg = add_cross_field_lyapunov(current_exp_config, df_compare, error_cols=["ML_Error_km"])
 
         # 2. Eulerian Metrics
-        # print("Calculating Eulerian velocity MSE...")
-        # calculate_velocity_mse(data_config, current_exp_config)
+        print("Calculating Eulerian velocity MSE...")
+        calculate_velocity_mse(data_config, current_exp_config)
 
         # 3. Spectral Metrics
         print('Calculating FFT')
@@ -67,7 +67,8 @@ def plot_metrics(data_config: DataConfig, exp_config: ExperimentConfig,
     # Plot experiment results across all trials
     plot_several_experiments(exp_config, exp_names=exp_names,
                              metrics_to_plot=['euler_distance', 'ftle',
-                                              'kinetic_energy_spectrum'])
+                                              'kinetic_energy_spectrum',
+                                              'velocity_nmse'])
 
     # Plot trajectories
     # plot_multi_experiment_trajectories(exp_config, exp_names)

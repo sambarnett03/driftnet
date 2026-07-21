@@ -8,7 +8,7 @@ from metrics.diagnostics import save_metrics, plot_metrics
 from driftnet.config import MasterConfig
 from driftnet.utils import print_and_save_config
 from driftnet.metrics.lagrange import compute_trajectories
-from driftnet.generated_types import ExperimentPathType
+from driftnet.generated_types import ExperimentPathType, MetricType
 
 
 def main():
@@ -35,11 +35,15 @@ def main():
     exp_names = ['default_experiment/baseline_trial',
                  'pixelshuffle/baseline_trial',
                  'batchnorm/baseline_trial',
-                 'interpolate/normalise_trajectories']
+                 'interpolate/baseline_trial']
+
+    metric_names: Sequence[MetricType]
+    # metric_names = ['euler_distance', 'kinetic_energy_spectrum', 'distance_distribution']
+    metric_names = ['distance_distribution']
 
     # compute_trajectories(config.data, config.experiment, exp_names)
-    save_metrics(config.data, config.experiment, exp_names)
-    plot_metrics(config.data, config.experiment, exp_names)
+    # save_metrics(config.data, config.experiment, exp_names, metric_names)
+    plot_metrics(config.data, config.experiment, exp_names, metric_names)
 
 
 if __name__ == "__main__":

@@ -407,3 +407,49 @@ def calculate_aggregate_metrics(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def save_distance_distribution(
+    exp_config: ExperimentConfig,
+    time_indices: list[int] = [24, 72, 168]  # Default: 1 day, 3 days, 1 week
+) -> None:
+    """
+    Calculates and saves the raw distance errors between truth and predicted trajectories
+    for a specific set of time indices to compute variance/distributions later.
+    """
+    truth_file = exp_config.metrics / "trajectories_truth.zarr"
+    pred_file = exp_config.metrics / "trajectories_ml_predicted.zarr"
+
+    ds_truth = xr.open_zarr(truth_file)
+    ds_pred = xr.open_zarr(pred_file)
+
+
+    total_times = ds_truth.sizes["obs"]
+
+    # Ensure requested indices aren't out of bounds for short simulations
+    valid_indices = [t for t in time_indices if t < total_times]
+    if not valid_indices:
+        valid_indices = [total_times - 1]  # Fallback to the final timestep
+
+    df_dict = {}
+    for t_idx in valid_indices:
+        lon_t = ds_truth["lon"].isel(obs=t_idx).values
+        lat_t = ds_truth["lat"].isel(obs=t_idx).values
+        lon_p = ds_pred["lon"].isel(obs=t_idx).values
+        lat_p = ds_pred["lat"].isel(obs=t_idx).values
+
+        # Filter out out-of-bounds/deleted particles
+        valid = ~np.isnan(lon_t) & ~np.isnan(lat_t) & ~np.isnan(lon_p) & ~np.isnan(lat_p)
+        lon_t_v, lat_t_v = lon_t[valid], lat_t[valid]
+        lon_p_v, lat_p_v = lon_p[valid], lat_p[valid]
+
+        dists = haversine_distance(lon_t_v, lat_t_v, lon_p_v, lat_p_v)
+
+        # Pad with NaNs so arrays are equal length to build a Polars DataFrame
+        padded_dists = np.full(ds_truth.sizes["trajectory"], np.nan)
+        padded_dists[valid] = dists
+
+        df_dict[f"dist_t_{t_idx}"] = padded_dists
+
+    df_dist = pl.DataFrame(df_dict)
+    out_path = exp_config.metrics / "distance_distribution.csv"
+    df_dist.write_csv(out_path)
+    print(f"Distance distributions saved to {out_path}")

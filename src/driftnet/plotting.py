@@ -18,18 +18,19 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.quiver import Quiver
 from numpy.typing import ArrayLike, NDArray
+from scipy.stats import gaussian_kde
+from matplotlib.ticker import ScalarFormatter
 
 from driftnet.config import DataConfig, ExperimentConfig
 from driftnet.generated_types import ExperimentPathType
 from driftnet.utils import _get_valid_spatial_slices, extract_trajectories
+from driftnet.generated_types import MetricType
 
 Bounds = tuple[float, float, float, float]
 BoundsLike = Sequence[float]
 CornerPoint = tuple[float, float]
 CornerPoints = Sequence[CornerPoint]
 Corners = BoundsLike | CornerPoints
-MetricType = Literal["euler_distance", "ftle", "velocity_mse", "kinetic_energy_spectrum",
-                     "velocity_nmse"]
 
 
 def _parse_corners(corners: Corners | None | str) -> Bounds | None | str:
@@ -967,10 +968,6 @@ def _plot_kinetic_energy_spectrum(
     metric_name: MetricType,
     folder_name: str | Path,
 ):
-    import matplotlib.pyplot as plt
-    from matplotlib.ticker import ScalarFormatter
-
-    os.makedirs(folder_name, exist_ok=True)
 
     # x_values represents wavenumbers here. Ignore k=0 to prevent log(0) errors.
     valid = x_values > 0
@@ -1011,8 +1008,87 @@ def _plot_kinetic_energy_spectrum(
     secax.xaxis.set_major_formatter(ScalarFormatter())
 
     # Handle directory creation and saving the figure
-    Path(f"images/{folder_name}").mkdir(parents=True, exist_ok=True)
-    plot_path = f"/home/users/sbarnett/documents/driftnet/images/{folder_name}/{metric_name}.png"
+    plot_path = Path(f"/home/users/sbarnett/documents/driftnet/images/{folder_name}/{metric_name}.png")
+    os.makedirs(plot_path.parent, exist_ok=True)
+    plt.savefig(plot_path, bbox_inches="tight", dpi=300)
+    print(f"Metrics plot successfully saved to {plot_path}")
+    plt.close()
+
+
+def _plot_distance_distribution(
+    data: dict,
+    x_values: np.ndarray,
+    metric_name: MetricType,
+    folder_name: str | Path,
+):
+    import matplotlib.pyplot as plt
+    from scipy.stats import gaussian_kde
+
+    os.makedirs(folder_name, exist_ok=True)
+
+    # Extract the column names (the time indices we saved)
+    sample_df = next(iter(data.values()))
+    time_cols = sample_df.columns
+
+    # Create a subplot for each evaluated time step
+    num_times = len(time_cols)
+    fig, axes = plt.subplots(1, num_times, figsize=(6 * num_times, 5), sharey=False)
+    max_ys = []
+    if num_times == 1:
+        axes = [axes]
+
+    for idx, col in enumerate(time_cols):
+        ax = axes[idx]
+        t_idx = col.split("_")[-1]  # Extracts the '72' from 'dist_t_72'
+
+        # Find global max distance across all experiments to set a common x-axis
+        max_val = 0
+        for df in data.values():
+            # Get values and explicitly drop both nulls and NaNs!
+            vals = df[col].drop_nulls().to_numpy()
+            vals = vals[~np.isnan(vals)]
+
+            if len(vals) > 0:
+                max_val = max(max_val, np.max(vals))
+
+        if max_val == 0 or np.isnan(max_val):
+            continue
+
+        x_grid = np.linspace(0, max_val, 200)
+
+        for label, df in data.items():
+            # Extract and clean values for the KDE
+            vals = df[col].drop_nulls().to_numpy()
+            vals = vals[~np.isnan(vals)]
+
+            if len(vals) < 2:
+                continue
+
+            # Skip if variance is 0 (e.g., t=0 where particles haven't moved yet)
+            if np.var(vals) == 0:
+                continue
+
+            # Compute a smooth, normal-ish distribution curve
+            kde = gaussian_kde(vals)
+            ax.plot(x_grid, kde(x_grid), linewidth=2.5, label=label)
+            ax.fill_between(x_grid, kde(x_grid), alpha=0.1) # Shaded area under curve
+            max_ys.append(max(kde(x_grid)))
+
+        ax.set_title(f"Separation Variance (t={t_idx} hours)", fontsize=14)
+        ax.set_xlabel("Separation Distance (km)", fontsize=12)
+        if idx == 0:
+            ax.set_ylabel("Density / Probability", fontsize=12)
+        ax.grid(True, linestyle=":", alpha=0.6)
+
+        if idx == num_times - 1:
+            ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+
+    for ax in axes:
+        ax.set_ylim(0, max(max_ys) * 1.2)
+
+    plt.tight_layout()
+    plot_path = Path(f"/home/users/sbarnett/documents/driftnet/images/{folder_name}/{metric_name}.png")
+    os.makedirs(plot_path.parent, exist_ok=True)
     plt.savefig(plot_path, bbox_inches="tight", dpi=300)
     print(f"Metrics plot successfully saved to {plot_path}")
     plt.close()
@@ -1061,6 +1137,12 @@ def plot_several_experiments(
             "x_col": "time",
             "plot_fn": _plot_multi_experiment
         },
+        "distance_distribution": {
+            "csv_name": "distance_distribution.csv",
+            "heading": "ALL",
+            "x_col": None,
+            "plot_fn": _plot_distance_distribution
+        }
     }
 
     for metric in metrics_to_plot:
@@ -1081,17 +1163,22 @@ def plot_several_experiments(
             df = pl.read_csv(file_path)
 
             if i == 0:  # Calculate the x-axis values once
-                if cfg["x_col"] == "time":
+                if cfg.get("x_col") == "time":
                     df_time = df.with_columns(pl.col("time").str.to_datetime(strict=False))
                     x_values = ((df_time["time"] - df_time["time"][0]).dt.total_minutes() / 60.0).to_numpy()
-                else:
+                elif cfg.get("x_col") is not None:
                     x_values = df[cfg["x_col"]].to_numpy()
+                else:
+                    x_values = np.array([])  # Fallback for metrics that don't use x_values
 
                 # If the metric includes a ground truth column in the CSV, add it!
                 if "truth_heading" in cfg and cfg["truth_heading"] in df.columns:
                     data["Ground Truth"] = df[cfg["truth_heading"]].to_numpy()
 
-            data[name] = df[cfg["heading"]].to_numpy()
+            if cfg.get("heading") == "ALL":
+                data[name] = df
+            else:
+                data[name] = df[cfg["heading"]].to_numpy()
 
         # Dispatch to the specific plotting function defined in the registry
         plot_fn = cfg.get("plot_fn", _plot_multi_experiment)

@@ -14,15 +14,15 @@ from driftnet.plotting import (
 from driftnet.generated_types import ExperimentPathType
 
 from driftnet.metrics.spectrum import write_spectra_to_csv
-from driftnet.generated_types import ExperimentPathType
-
-
+from driftnet.generated_types import ExperimentPathType, MetricType
+from driftnet.metrics.lagrange import save_distance_distribution
 
 
 def save_metrics(
     data_config: DataConfig,
     exp_config: ExperimentConfig,
-    exp_names: Sequence[ExperimentPathType]
+    exp_names: Sequence[ExperimentPathType],
+    metrics_to_calc: Sequence[MetricType]
 ):
     """
     Iterates over all specified experiments and saves their respective metrics.
@@ -43,32 +43,46 @@ def save_metrics(
         )
 
         # 1. Lagrangian Metrics
-        print("Calculating Lagrangian connectivity metrics...")
-        df_compare, df_agg = get_connectivity_metrics(current_exp_config)
+        if 'euler_distance' in metrics_to_calc:
+            print("Calculating Lagrangian connectivity metrics...")
+            df_compare, df_agg = get_connectivity_metrics(current_exp_config)
 
-        print("Calculating FTLE...")
-        df_lyap, lyap_agg = add_cross_field_lyapunov(current_exp_config, df_compare, error_cols=["ML_Error_km"])
+            if 'ftle' in metrics_to_calc:
+                print("Calculating FTLE...")
+                df_lyap, lyap_agg = add_cross_field_lyapunov(current_exp_config, df_compare, error_cols=["ML_Error_km"])
 
-        # 2. Eulerian Metrics
-        print("Calculating Eulerian velocity MSE...")
-        calculate_velocity_mse(data_config, current_exp_config)
+        # 2. FTLE
+        if 'ftle' in metrics_to_calc and not 'euler_distance' in metrics_to_calc:
+            print("Calculating FTLE...")
+            df_compare, df_agg = get_connectivity_metrics(current_exp_config)
+            df_lyap, lyap_agg = add_cross_field_lyapunov(current_exp_config, df_compare, error_cols=["ML_Error_km"])
 
-        # 3. Spectral Metrics
-        print('Calculating FFT')
-        write_spectra_to_csv(data_config, current_exp_config)
+        # 3. Velocity MSE
+        if 'velocity_mse' in metrics_to_calc or 'velocity_nmse' in metrics_to_calc:
+            print("Calculating Eulerian velocity MSE...")
+            calculate_velocity_mse(data_config, current_exp_config)
+
+        # 4. Spectral Metrics
+        if 'kinetic_energy_spectrum' in metrics_to_calc:
+            print('Calculating FFT')
+            write_spectra_to_csv(data_config, current_exp_config)
+
+        # 5. Particle pair distances
+        if 'distance_distribution' in metrics_to_calc:
+            print("Calculating distance distribution...")
+            save_distance_distribution(current_exp_config, time_indices=[24, 72, 168])
 
     print("\nAll metrics across all experiments successfully saved!")
 
 
 
 def plot_metrics(data_config: DataConfig, exp_config: ExperimentConfig,
-                 exp_names: Sequence[ExperimentPathType] | None = None):
+                 exp_names: Sequence[ExperimentPathType],
+                 metrics_to_plot: Sequence[MetricType]):
 
     # Plot experiment results across all trials
     plot_several_experiments(exp_config, exp_names=exp_names,
-                             metrics_to_plot=['euler_distance', 'ftle',
-                                              'kinetic_energy_spectrum',
-                                              'velocity_nmse'])
+                             metrics_to_plot=metrics_to_plot)
 
     # Plot trajectories
     # plot_multi_experiment_trajectories(exp_config, exp_names)
@@ -108,11 +122,3 @@ def print_final_metrics(exp_config):
     print(f"Average FTLE between pairs: {average_ftle:.6f} days^-1")
 
 
-def evaluate_predictions(data_config: DataConfig, exp_config: ExperimentConfig):
-    # compute_trajectories(data_config, exp_config)
-    # save_metrics(data_config, exp_config, _plot=True)
-    exp_names : Sequence[ExperimentPathType]
-    exp_names = ['default_experiment/baseline_trial']
-
-    plot_metrics(data_config, exp_config, exp_names=exp_names)
-    print_final_metrics(exp_config)

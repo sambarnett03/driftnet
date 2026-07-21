@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 def generate_experiment_types(
         target_file:
         str = "/home/users/sbarnett/documents/driftnet/src/driftnet/generated_types.py"
@@ -12,6 +11,8 @@ def generate_experiment_types(
         return
 
     experiment_paths = []
+    metric_names = ["euler_distance", "ftle", "velocity_mse", "kinetic_energy_spectrum",
+                    "velocity_nmse", "distance_distribution"]
 
     # Walk through experiments and their trials
     for exp_dir in base_dir.iterdir():
@@ -24,6 +25,8 @@ def generate_experiment_types(
 
     # Sort for clean, predictable file output
     experiment_paths.sort()
+
+
 
     # Write the python file
     with open(target_file, "w") as f:
@@ -38,6 +41,9 @@ def generate_experiment_types(
             f.write("ExperimentPathType = str")
 
         f.write(" # type: ignore\n")
+
+        f.write(f'MetricType = Literal{metric_names}')
+
 
     print(f"Successfully updated combined types in {target_file}!")
 

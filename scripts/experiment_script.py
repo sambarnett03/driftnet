@@ -33,8 +33,8 @@ def main():
     generate_experiment_types()
 
     # Code to run
-    train_downscale(config.hyperparameters, config.data, config.experiment)
-    inference_over_test_set(config.data, config.hyperparameters, config.experiment)
+    # train_downscale(config.hyperparameters, config.data, config.experiment)
+    # inference_over_test_set(config.data, config.hyperparameters, config.experiment)
 
     exp_names : Sequence[ExperimentPathType]
     metric_names: Sequence[MetricType]
@@ -42,10 +42,10 @@ def main():
     metric_names = ['euler_distance', 'velocity_nmse', 'ftle', 'kinetic_energy_spectrum', 'distance_distribution']
     exp_names = ['batchnorm/baseline_trial', 'interpolate/baseline_trial', 'residuals/baseline_trial']
 
-    compute_trajectories(config.data, config.experiment, ['residuals/baseline_trial'])
-    save_metrics(config.data, config.experiment, ['residuals/baseline_trial'], metric_names)
+    compute_trajectories(config.data, config.experiment, exp_names)
+    save_metrics(config.data, config.experiment, exp_names, metric_names)
     plot_metrics(config.data, config.experiment, exp_names,
-                 ['distance_distribution', 'euler_distance', 'kinetic_energy_spectrum'])
+                 ['distance_distribution', 'euler_distance', 'kinetic_energy_spectrum', 'velocity_nmse'])
 
 
 if __name__ == "__main__":

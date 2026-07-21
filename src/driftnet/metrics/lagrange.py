@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import get_args
 from collections.abc import Sequence
+import shutil
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -203,7 +204,7 @@ def _setup_test_particles(data_config: DataConfig, test_times: NDArray):
     valid_mask = (u_initial != 0.0) & (~np.isnan(u_initial))
     y_idx, x_idx = np.where(valid_mask)
 
-    # Subsample to track ~100 particles uniformly across the domain
+    # Subsample to track ~10000 particles uniformly across the domain
     step = max(1, len(y_idx) // 100000)
 
     # Release the particles at the correctly trimmed rho (cell center) locations
@@ -244,6 +245,10 @@ def compute_trajectories(
 
         # Setup times for experiment
         test_times, runtime, out_dir = _setup_experiment(current_exp_config, start_time, duration_days)
+
+        # Force delete the existing zarr store to prevent OceanParcels caching issues
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
 
         # Prepare FieldSets
         fs_truth, fs_pred = _setup_fieldsets(data_config, current_exp_config, test_times)

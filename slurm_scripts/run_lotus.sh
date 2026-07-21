@@ -5,7 +5,7 @@
 #SBATCH --qos=short
 #SBATCH -o /home/users/sbarnett/documents/driftnet/slurm_scripts/logs/output.%j.out # STDOUT
 #SBATCH -e /home/users/sbarnett/documents/driftnet/slurm_scripts/logs/output.%j.err
-#SBATCH --time=01:00:00              # Time limit (hh:mm:ss)
+#SBATCH --time=03:00:00              # Time limit (hh:mm:ss)
 #SBATCH --mem=200GB                    # Memory request
 
 

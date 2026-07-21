@@ -4,6 +4,8 @@ from collections.abc import Sequence
 
 from generate_types import generate_experiment_types
 from metrics.diagnostics import save_metrics, plot_metrics
+from ml.training_script import train_downscale
+from ml.inference_script import inference_over_test_set
 
 from driftnet.config import MasterConfig
 from driftnet.utils import print_and_save_config
@@ -31,19 +33,19 @@ def main():
     generate_experiment_types()
 
     # Code to run
+    train_downscale(config.hyperparameters, config.data, config.experiment)
+    inference_over_test_set(config.data, config.hyperparameters, config.experiment)
+
     exp_names : Sequence[ExperimentPathType]
-    exp_names = ['default_experiment/baseline_trial',
-                 'pixelshuffle/baseline_trial',
-                 'batchnorm/baseline_trial',
-                 'interpolate/baseline_trial']
-
     metric_names: Sequence[MetricType]
-    # metric_names = ['euler_distance', 'kinetic_energy_spectrum', 'distance_distribution']
-    metric_names = ['distance_distribution']
 
-    # compute_trajectories(config.data, config.experiment, exp_names)
-    # save_metrics(config.data, config.experiment, exp_names, metric_names)
-    plot_metrics(config.data, config.experiment, exp_names, metric_names)
+    metric_names = ['euler_distance', 'velocity_nmse', 'ftle', 'kinetic_energy_spectrum', 'distance_distribution']
+    exp_names = ['batchnorm/baseline_trial', 'interpolate/baseline_trial', 'residuals/baseline_trial']
+
+    compute_trajectories(config.data, config.experiment, ['residuals/baseline_trial'])
+    save_metrics(config.data, config.experiment, ['residuals/baseline_trial'], metric_names)
+    plot_metrics(config.data, config.experiment, exp_names,
+                 ['distance_distribution', 'euler_distance', 'kinetic_energy_spectrum'])
 
 
 if __name__ == "__main__":

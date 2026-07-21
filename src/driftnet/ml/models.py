@@ -58,6 +58,7 @@ class Strict5xOceanUNet(nn.Module):
         """
         A U-Net designed to extract features at the low resolution (605x1072)
         and explicitly upsample by exactly 5x at the very end using PixelShuffle.
+        Uses Global Residual Learning to predict sub-grid scale turbulence.
         """
         super().__init__()
         self.n_channels = n_channels
@@ -76,33 +77,42 @@ class Strict5xOceanUNet(nn.Module):
         self.up4 = Up(base_features * 2 + base_features, base_features)
 
         # --- Super Resolution Head ---
-        # Replaced ConvTranspose2d with PixelShuffle for a clean 5x upscale
-        upscale_factor = 5
-        mid_features = n_classes * (upscale_factor**2)  # 2 * 25 = 50 channels
+        self.upscale_factor = 5
+        mid_features = n_classes * (self.upscale_factor**2)  # 2 * 25 = 50 channels
 
         self.pre_shuffle = nn.Conv2d(base_features, mid_features, kernel_size=3, padding=1)
-        self.pixel_shuffle = nn.PixelShuffle(upscale_factor)
+        self.pixel_shuffle = nn.PixelShuffle(self.upscale_factor)
 
     def forward(self, x):
         """
         Expects Input x: [B, 2, 605, 1072]
         Returns Output:  [B, 2, 3025, 5360]
         """
-        # Encode
+        # 1. Base physics: Bilinearly upsample the low-res input
+        # align_corners=True ensures the geographic grid coordinates don't shift
+        base_field = F.interpolate(
+            x,
+            scale_factor=float(self.upscale_factor),
+            mode="bilinear",
+            align_corners=True
+        )
+
+        # 2. ML turbulence: Extract features to generate the high-frequency residual
         x1 = self.inc(x)
         x2 = self.down1(x1)
         x3 = self.down2(x2)
         x4 = self.down3(x3)
         x5 = self.down4(x4)
 
-        # Decode
-        x = self.up1(x5, x4)
-        x = self.up2(x, x3)
-        x = self.up3(x, x2)
-        x = self.up4(x, x1)
+        x_up = self.up1(x5, x4)
+        x_up = self.up2(x_up, x3)
+        x_up = self.up3(x_up, x2)
+        x_up = self.up4(x_up, x1)
 
-        # Final 5x Upscale
-        x = self.pre_shuffle(x)
-        out = self.pixel_shuffle(x)
+        x_feat = self.pre_shuffle(x_up)
+        residual = self.pixel_shuffle(x_feat)
+
+        # 3. Global Residual Connection: Add the ML turbulence to the smooth base field
+        out = base_field + residual
 
         return out

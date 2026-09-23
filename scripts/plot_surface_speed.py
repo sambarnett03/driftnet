@@ -37,10 +37,15 @@ def main():
     parser.add_argument("--time", type=str, default=None, help="Date/time of the snapshot")
     parser.add_argument("--mean", action="store_true", help="Plot the time-mean speed")
     parser.add_argument("--vmax", type=float, default=None, help="Top of the colour scale")
-    parser.add_argument("--cmap", type=str, default="viridis", help="Matplotlib colormap")
+    parser.add_argument(
+        "--cmap", type=str, default="viridis", help="Matplotlib or cmocean (cmo.*) colormap"
+    )
     parser.add_argument("--no-inset", action="store_true", help="Omit the locator globe")
     parser.add_argument("--output", type=str, default="images/wio_surface_speed.png")
     args = parser.parse_args()
+
+    if args.cmap.startswith("cmo."):
+        import cmocean  # noqa: F401  (importing registers the cmo.* colormaps)
 
     with open(args.config) as f:
         config = yaml.safe_load(f)

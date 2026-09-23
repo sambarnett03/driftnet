@@ -6,6 +6,7 @@ from typing import Any, Literal, cast, get_args
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
@@ -1393,3 +1394,357 @@ def plot_speed_map(
             fig.savefig(output_path.with_suffix(".pdf"), dpi=dpi, bbox_inches="tight")
 
     return fig, ax
+
+
+def grid_spacing_km(lon: NDArray[np.floating], lat: NDArray[np.floating]) -> float:
+    """Return the median zonal grid spacing of a 2D lon/lat grid, in km."""
+    dlon = np.abs(np.diff(lon, axis=1))
+    lat_mid = 0.5 * (lat[:, 1:] + lat[:, :-1])
+    return float(np.nanmedian(dlon * 111.32 * np.cos(np.deg2rad(lat_mid))))
+
+
+def _crop_to_box(
+    lon: NDArray[np.floating],
+    lat: NDArray[np.floating],
+    field: NDArray[np.floating],
+    bounds: Bounds,
+    margin: int = 1,
+) -> tuple[NDArray[np.floating], NDArray[np.floating], NDArray[np.floating]]:
+    """Crop 2D arrays to the index box covering ``bounds`` (keeps pcolormesh fast)."""
+    lon_min, lon_max, lat_min, lat_max = bounds
+    inside = (lon >= lon_min) & (lon <= lon_max) & (lat >= lat_min) & (lat <= lat_max)
+    rows = np.flatnonzero(inside.any(axis=1))
+    cols = np.flatnonzero(inside.any(axis=0))
+
+    if rows.size == 0 or cols.size == 0:
+        raise ValueError(f"No grid points fall inside {bounds}.")
+
+    r0, r1 = max(rows[0] - margin, 0), rows[-1] + margin + 1
+    c0, c1 = max(cols[0] - margin, 0), cols[-1] + margin + 1
+    return lon[r0:r1, c0:c1], lat[r0:r1, c0:c1], field[r0:r1, c0:c1]
+
+
+def _draw_unet(ax: Axes, factor: int, fill: str, edge: str, ink: str) -> None:
+    """Draw a schematic U-Net (encoder, bottleneck, decoder, PixelShuffle head)."""
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+
+    centre_y = 0.55
+    width = 0.055
+    encoder_x = [0.04, 0.13, 0.22, 0.31]
+    decoder_x = [0.49, 0.58, 0.67, 0.76][::-1]
+    heights = [0.62, 0.46, 0.32, 0.22]
+
+    def bar(x: float, height: float, colour: str = fill) -> None:
+        ax.add_patch(
+            mpatches.FancyBboxPatch(
+                (x, centre_y - height / 2),
+                width,
+                height,
+                boxstyle="round,pad=0,rounding_size=0.01",
+                facecolor=colour,
+                edgecolor=edge,
+                linewidth=0.8,
+            )
+        )
+
+    for x_enc, x_dec, height in zip(encoder_x, decoder_x, heights, strict=True):
+        bar(x_enc, height)
+        bar(x_dec, height)
+        # Skip connection from each encoder level to its decoder level.
+        ax.annotate(
+            "",
+            xy=(x_dec, centre_y + height / 2 - 0.03),
+            xytext=(x_enc + width, centre_y + height / 2 - 0.03),
+            arrowprops={"arrowstyle": "->", "color": edge, "linewidth": 0.7, "linestyle": ":"},
+        )
+
+    bar(0.40, 0.14)  # bottleneck
+
+    # PixelShuffle head: a taller block, since the output grid is `factor` x finer.
+    ax.add_patch(
+        mpatches.FancyBboxPatch(
+            (0.88, centre_y - 0.33),
+            0.09,
+            0.66,
+            boxstyle="round,pad=0,rounding_size=0.01",
+            facecolor=edge,
+            edgecolor=edge,
+            linewidth=0.8,
+        )
+    )
+    ax.annotate(
+        "",
+        xy=(0.88, centre_y),
+        xytext=(decoder_x[0] + width, centre_y),
+        arrowprops={"arrowstyle": "->", "color": ink, "linewidth": 1},
+    )
+
+    label_y = 0.16
+    ax.text(0.2, label_y, "Encoder", ha="center", va="top", color=ink, fontsize="small")
+    ax.text(0.62, label_y, "Decoder", ha="center", va="top", color=ink, fontsize="small")
+    ax.text(
+        0.925,
+        label_y,
+        f"Pixel-\nShuffle\n×{factor}",
+        ha="center",
+        va="top",
+        color=ink,
+        fontsize="x-small",
+        linespacing=1.1,
+    )
+    ax.text(0.5, 1.0, "U-Net", ha="center", va="bottom", color=ink, fontweight="bold")
+
+
+def plot_method_figure(
+    hr_lon: NDArray[np.floating],
+    hr_lat: NDArray[np.floating],
+    lr_lon: NDArray[np.floating],
+    lr_lat: NDArray[np.floating],
+    truth_speed: NDArray[np.floating],
+    degraded_speed: NDArray[np.floating],
+    predicted_speed: NDArray[np.floating],
+    corners: Corners,
+    factor: int = 5,
+    loss_name: str = "MSE",
+    cmap: str = "viridis",
+    vmax: float | None = None,
+    font_size: float = 14,
+    dpi: int = 300,
+    output_path: str | Path | None = "images/method_figure.png",
+) -> Figure:
+    """
+    Plot a poster schematic of the downscaling method on real fields.
+
+    Left to right (inference, solid arrows): high-resolution truth -> degraded
+    input -> U-Net -> super-resolved output. A dashed loop underneath marks the
+    training-only step: the output is compared with the truth and the loss is
+    back-propagated into the U-Net.
+
+    Parameters
+    ----------
+    hr_lon, hr_lat : 2D arrays
+        Coordinates of the high-resolution (truth and predicted) grid.
+
+    lr_lon, lr_lat : 2D arrays
+        Coordinates of the degraded grid.
+
+    truth_speed, degraded_speed, predicted_speed : 2D arrays
+        Speed (m/s) on the matching grid. NaNs are drawn as land.
+
+    corners : tuple or list
+        Zoom box shown in each map panel, in any form accepted by
+        ``plot_velocity_quiver``. A few degrees across works best, so the
+        coarse input's pixels are visible.
+
+    factor : int, default 5
+        Degradation / upscaling factor, used in the labels.
+
+    loss_name : str, default "MSE"
+        Name of the training loss, used in the labels.
+
+    vmax : float, optional
+        Top of the shared colour scale. Defaults to the 99th percentile of the
+        truth speed inside the zoom box.
+
+    Returns
+    -------
+    fig
+        Matplotlib figure.
+    """
+    bounds = _parse_corners(corners)
+    if not isinstance(bounds, tuple):
+        raise ValueError("corners must give an explicit zoom box.")
+
+    panels = [
+        ("High-resolution truth", *_crop_to_box(hr_lon, hr_lat, truth_speed, bounds)),
+        ("Degraded input", *_crop_to_box(lr_lon, lr_lat, degraded_speed, bounds)),
+        ("Super-resolved output", *_crop_to_box(hr_lon, hr_lat, predicted_speed, bounds)),
+    ]
+    hr_km = grid_spacing_km(hr_lon, hr_lat)
+    lr_km = grid_spacing_km(lr_lon, lr_lat)
+    subtitles = [f"~{hr_km:.1f} km grid", f"~{lr_km:.1f} km grid", f"~{hr_km:.1f} km grid"]
+
+    if vmax is None:
+        vmax = float(np.nanpercentile(panels[0][3], 99))
+
+    ink = "#262626"
+    muted = "#595959"
+    land_colour = "#d9d9d9"
+    net_fill = "#c6d4e1"
+    net_edge = "#4a6d8c"
+    train_colour = "#c0392b"
+    projection = ccrs.PlateCarree()
+
+    with plt.rc_context({"font.size": font_size}):
+        fig = plt.figure(figsize=(18, 6.4))
+
+        map_bottom, map_height = 0.33, 0.56
+        map_axes_pos = {
+            0: (0.01, map_bottom, 0.21, map_height),
+            1: (0.27, map_bottom, 0.21, map_height),
+            2: (0.75, map_bottom, 0.21, map_height),
+        }
+        unet_ax = fig.add_axes((0.525, map_bottom + 0.06, 0.18, map_height - 0.1))
+        _draw_unet(unet_ax, factor, fill=net_fill, edge=net_edge, ink=ink)
+
+        mesh = None
+        map_axes = []
+        for i, (title, lon, lat, speed) in enumerate(panels):
+            ax = cast(GeoAxes, fig.add_axes(map_axes_pos[i], projection=projection))
+            ax.set_extent(bounds, crs=projection)
+            ax.set_facecolor(land_colour)
+            mesh = ax.pcolormesh(
+                lon,
+                lat,
+                np.ma.masked_invalid(speed),
+                transform=projection,
+                cmap=cmap,
+                vmin=0,
+                vmax=vmax,
+                shading="nearest",
+                rasterized=True,
+            )
+            ax.add_feature(cfeature.LAND.with_scale("10m"), facecolor=land_colour, zorder=2)
+            ax.coastlines(resolution="10m", linewidth=0.6, color="#404040", zorder=3)
+            ax.spines["geo"].set_edgecolor(muted)
+            ax.set_title(f"{title}\n", fontweight="bold", color=ink, pad=4)
+            ax.text(
+                0.5,
+                1.02,
+                subtitles[i],
+                transform=ax.transAxes,
+                ha="center",
+                va="bottom",
+                color=muted,
+                fontsize="small",
+            )
+            map_axes.append(ax)
+
+        # Map aspect is fixed by the zoom box, so read back where each panel landed.
+        fig.canvas.draw()
+        boxes = [ax.get_position() for ax in map_axes]
+        unet_box = unet_ax.get_position()
+
+        cax = fig.add_axes((boxes[2].x1 + 0.01, boxes[2].y0, 0.009, boxes[2].height))
+        colorbar = fig.colorbar(mesh, cax=cax, extend="max")
+        colorbar.set_label("Speed (m s$^{-1}$)", color=ink)
+        colorbar.outline.set_visible(False)
+
+        def arrow(start, end, colour=ink, style="-", connection="arc3", width=2.0):
+            fig.add_artist(
+                mpatches.FancyArrowPatch(
+                    start,
+                    end,
+                    transform=fig.transFigure,
+                    arrowstyle="-|>,head_length=0.6,head_width=0.3",
+                    mutation_scale=14,
+                    color=colour,
+                    linewidth=width,
+                    linestyle=style,
+                    connectionstyle=connection,
+                    shrinkA=0,
+                    shrinkB=0,
+                )
+            )
+
+        def line(xs, ys, colour, style="--"):
+            fig.add_artist(
+                Line2D(xs, ys, transform=fig.transFigure, color=colour, lw=2.0, ls=style)
+            )
+
+        mid_y = boxes[0].y0 + boxes[0].height / 2
+        gap = 0.008
+
+        # --- Inference path (solid) ---
+        arrow((boxes[0].x1 + gap, mid_y), (boxes[1].x0 - gap, mid_y))
+        fig.text(
+            (boxes[0].x1 + boxes[1].x0) / 2,
+            mid_y + 0.03,
+            f"Degrade\n×{factor}",
+            ha="center",
+            va="bottom",
+            color=ink,
+            fontsize="small",
+        )
+        arrow((boxes[1].x1 + gap, mid_y), (unet_box.x0 - gap, mid_y))
+        arrow((unet_box.x1 + gap, mid_y), (boxes[2].x0 - gap, mid_y))
+
+        # --- Training loop (dashed) ---
+        loss_x = (boxes[2].x0 + boxes[2].x1) / 2
+        loss_y = 0.15
+        truth_x = (boxes[0].x0 + boxes[0].x1) / 2
+        unet_x = (unet_box.x0 + unet_box.x1) / 2
+        loss_text = fig.text(
+            loss_x,
+            loss_y,
+            f"{loss_name} loss",
+            ha="center",
+            va="center",
+            color=ink,
+            fontweight="bold",
+            bbox={
+                "boxstyle": "round,pad=0.5",
+                "facecolor": "white",
+                "edgecolor": train_colour,
+                "linewidth": 2,
+            },
+        )
+        # Measure the drawn loss box so the dashed lines meet its edges exactly.
+        fig.canvas.draw()
+        loss_patch = loss_text.get_bbox_patch()
+        assert loss_patch is not None
+        loss_box = loss_patch.get_window_extent().transformed(fig.transFigure.inverted())
+        low_y = loss_box.y0 + 0.3 * loss_box.height
+        high_y = loss_box.y0 + 0.7 * loss_box.height
+
+        # Truth -> loss (the target)
+        line([truth_x, truth_x], [boxes[0].y0 - gap, low_y], train_colour)
+        arrow((truth_x, low_y), (loss_box.x0, low_y), colour=train_colour, style="--")
+        fig.text(
+            (truth_x + unet_x) / 2,
+            low_y - 0.012,
+            "Target",
+            ha="center",
+            va="top",
+            color=muted,
+            fontsize="small",
+        )
+
+        # Output -> loss (the prediction)
+        arrow((loss_x, boxes[2].y0 - gap), (loss_x, loss_box.y1), colour=train_colour, style="--")
+
+        # Loss -> U-Net (back-propagate)
+        line([loss_box.x0, unet_x], [high_y, high_y], train_colour)
+        arrow((unet_x, high_y), (unet_x, unet_box.y0 + 0.02), colour=train_colour, style="--")
+        fig.text(
+            unet_x + 0.008,
+            (high_y + unet_box.y0) / 2,
+            "Update\nweights",
+            ha="left",
+            va="center",
+            color=muted,
+            fontsize="small",
+        )
+
+        fig.legend(
+            handles=[
+                Line2D([], [], color=ink, lw=2, label="Inference"),
+                Line2D([], [], color=train_colour, lw=2, ls="--", label="Training only"),
+            ],
+            loc="lower left",
+            bbox_to_anchor=(0.01, 0.0),
+            ncol=2,
+            frameon=False,
+            fontsize="small",
+            labelcolor=muted,
+        )
+
+        if output_path is not None:
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+            fig.savefig(output_path.with_suffix(".pdf"), dpi=dpi, bbox_inches="tight")
+
+    return fig

@@ -24,7 +24,11 @@ from matplotlib.ticker import ScalarFormatter
 
 from driftnet.config import DataConfig, ExperimentConfig
 from driftnet.generated_types import ExperimentPathType
-from driftnet.utils import _get_valid_spatial_slices, extract_trajectories
+from driftnet.utils import (
+    _get_valid_spatial_slices,
+    extract_trajectories,
+    get_spatial_trim_slices,
+)
 from driftnet.generated_types import MetricType
 
 Bounds = tuple[float, float, float, float]
@@ -1403,14 +1407,13 @@ def grid_spacing_km(lon: NDArray[np.floating], lat: NDArray[np.floating]) -> flo
     return float(np.nanmedian(dlon * 111.32 * np.cos(np.deg2rad(lat_mid))))
 
 
-def _crop_to_box(
+def _box_slices(
     lon: NDArray[np.floating],
     lat: NDArray[np.floating],
-    field: NDArray[np.floating],
     bounds: Bounds,
     margin: int = 1,
-) -> tuple[NDArray[np.floating], NDArray[np.floating], NDArray[np.floating]]:
-    """Crop 2D arrays to the index box covering ``bounds`` (keeps pcolormesh fast)."""
+) -> tuple[slice, slice]:
+    """Return (row, col) slices of the index box covering ``bounds``, plus a margin."""
     lon_min, lon_max, lat_min, lat_max = bounds
     inside = (lon >= lon_min) & (lon <= lon_max) & (lat >= lat_min) & (lat <= lat_max)
     rows = np.flatnonzero(inside.any(axis=1))
@@ -1419,9 +1422,51 @@ def _crop_to_box(
     if rows.size == 0 or cols.size == 0:
         raise ValueError(f"No grid points fall inside {bounds}.")
 
-    r0, r1 = max(rows[0] - margin, 0), rows[-1] + margin + 1
-    c0, c1 = max(cols[0] - margin, 0), cols[-1] + margin + 1
-    return lon[r0:r1, c0:c1], lat[r0:r1, c0:c1], field[r0:r1, c0:c1]
+    return (
+        slice(max(rows[0] - margin, 0), rows[-1] + margin + 1),
+        slice(max(cols[0] - margin, 0), cols[-1] + margin + 1),
+    )
+
+
+def _crop_to_box(
+    lon: NDArray[np.floating],
+    lat: NDArray[np.floating],
+    field: NDArray[np.floating],
+    bounds: Bounds,
+    margin: int = 1,
+) -> tuple[NDArray[np.floating], NDArray[np.floating], NDArray[np.floating]]:
+    """Crop 2D arrays to the index box covering ``bounds`` (keeps pcolormesh fast)."""
+    rows, cols = _box_slices(lon, lat, bounds, margin)
+    return lon[rows, cols], lat[rows, cols], field[rows, cols]
+
+
+def most_energetic_box(
+    lon: NDArray[np.floating],
+    lat: NDArray[np.floating],
+    speed: NDArray[np.floating],
+    size_deg: float = 3.0,
+) -> Bounds:
+    """Return the size_deg x size_deg box with the highest mean speed (land counts as 0)."""
+    from scipy.ndimage import uniform_filter
+
+    spacing = float(np.nanmedian(np.abs(np.diff(lon, axis=1))))
+    window = max(int(round(size_deg / spacing)), 1)
+    mean_speed = uniform_filter(np.nan_to_num(speed), size=window, mode="constant")
+
+    # Keep the whole box inside the domain.
+    half = window // 2
+    if half > 0:
+        mean_speed[:half], mean_speed[-half:] = 0, 0
+        mean_speed[:, :half], mean_speed[:, -half:] = 0, 0
+
+    j, i = np.unravel_index(np.argmax(mean_speed), mean_speed.shape)
+    lon_c, lat_c = float(lon[j, i]), float(lat[j, i])
+    return (
+        lon_c - size_deg / 2,
+        lon_c + size_deg / 2,
+        lat_c - size_deg / 2,
+        lat_c + size_deg / 2,
+    )
 
 
 def _draw_unet(ax: Axes, factor: int, fill: str, edge: str, ink: str, title: bool = True) -> None:
@@ -1883,3 +1928,310 @@ def plot_method_figure(
             fig.savefig(output_path.with_suffix(".pdf"), dpi=dpi, bbox_inches="tight")
 
     return fig
+
+
+def plot_velocity_grid(
+    lon: NDArray[np.floating],
+    lat: NDArray[np.floating],
+    fields: dict[str, tuple[NDArray[np.floating], NDArray[np.floating]]],
+    corners: Corners,
+    cmap: str = "viridis",
+    vmax: float | None = None,
+    arrows_across: int = 20,
+    font_size: float = 14,
+    dpi: int = 300,
+    output_path: str | Path | None = "images/comparison/velocity_comparison.png",
+) -> Figure:
+    """
+    Plot up to four velocity fields in a 2x2 grid: speed in colour, with arrows.
+
+    The first entry of ``fields`` is treated as the reference (ground truth):
+    every other panel's subtitle gives its RMSE against it inside the box.
+
+    Parameters
+    ----------
+    lon, lat : 2D arrays
+        Coordinates shared by every field.
+
+    fields : dict
+        Panel title -> (u, v), in reading order. NaNs are drawn as land.
+
+    corners : tuple or list
+        Box to plot, in any form accepted by ``plot_velocity_quiver``.
+
+    vmax : float, optional
+        Top of the shared colour scale. Defaults to the 99th percentile of the
+        reference speed inside the box. Arrows share one scale, set from it.
+
+    arrows_across : int, default 20
+        Approximate number of arrows across each panel.
+
+    Returns
+    -------
+    fig
+        Matplotlib figure.
+    """
+    if not 1 <= len(fields) <= 4:
+        raise ValueError("fields must contain between 1 and 4 entries.")
+
+    bounds = _parse_corners(corners)
+    if not isinstance(bounds, tuple):
+        raise ValueError("corners must give an explicit box.")
+
+    rows, cols = _box_slices(lon, lat, bounds)
+    lon, lat = lon[rows, cols], lat[rows, cols]
+    cropped = {
+        name: (np.asarray(u, dtype=float)[rows, cols], np.asarray(v, dtype=float)[rows, cols])
+        for name, (u, v) in fields.items()
+    }
+    speeds = {name: np.hypot(u, v) for name, (u, v) in cropped.items()}
+    reference = next(iter(cropped))
+    ref_u, ref_v = cropped[reference]
+
+    if vmax is None:
+        vmax = float(np.nanpercentile(speeds[reference], 99))
+
+    stride = max(lon.shape[1] // arrows_across, 1)
+    arrow_spacing = float(np.nanmedian(np.abs(np.diff(lon, axis=1)))) * stride
+    # An arrow at vmax is ~1.2 arrow spacings long.
+    arrow_scale = vmax / (1.2 * arrow_spacing)
+    key_speed = float(f"{0.5 * vmax:.1g}")
+
+    ink = "#262626"
+    muted = "#595959"
+    land_colour = "#d9d9d9"
+    projection = ccrs.PlateCarree()
+
+    with plt.rc_context({"font.size": font_size}):
+        fig, axes_raw = plt.subplots(
+            2,
+            2,
+            figsize=(12, 12.5),
+            subplot_kw={"projection": projection},
+            gridspec_kw={"wspace": 0.08, "hspace": 0.22},
+        )
+        axes = [cast(GeoAxes, ax) for ax in np.ravel(axes_raw)]
+
+        mesh = None
+        for ax in axes[len(cropped) :]:
+            ax.set_visible(False)
+
+        for i, (ax, (name, (u, v))) in enumerate(zip(axes, cropped.items(), strict=False)):
+            ax.set_extent(bounds, crs=projection)
+            ax.set_facecolor(land_colour)
+            mesh = ax.pcolormesh(
+                lon,
+                lat,
+                np.ma.masked_invalid(speeds[name]),
+                transform=projection,
+                cmap=cmap,
+                vmin=0,
+                vmax=vmax,
+                shading="nearest",
+                rasterized=True,
+            )
+            quiver = ax.quiver(
+                lon[::stride, ::stride],
+                lat[::stride, ::stride],
+                np.ma.masked_invalid(u[::stride, ::stride]),
+                np.ma.masked_invalid(v[::stride, ::stride]),
+                transform=projection,
+                angles="xy",
+                scale_units="xy",
+                scale=arrow_scale,
+                width=0.003,
+                color=ink,
+                zorder=4,
+            )
+            ax.add_feature(cfeature.LAND.with_scale("10m"), facecolor=land_colour, zorder=5)
+            ax.coastlines(resolution="10m", linewidth=0.6, color="#404040", zorder=6)
+            ax.spines["geo"].set_edgecolor(muted)
+
+            gridlines = ax.gridlines(
+                draw_labels=True, linewidth=0.4, color="white", alpha=0.5, linestyle="--"
+            )
+            gridlines.top_labels = False
+            gridlines.right_labels = False
+            gridlines.left_labels = i % 2 == 0
+            gridlines.bottom_labels = i >= len(cropped) - 2
+
+            ax.set_title(name, fontweight="bold", color=ink, pad=22)
+            if name == reference:
+                subtitle = "reference"
+            else:
+                error = np.sqrt(np.nanmean((u - ref_u) ** 2 + (v - ref_v) ** 2))
+                subtitle = f"RMSE vs {reference.lower()}: {error:.3f} m s$^{{-1}}$"
+            ax.text(
+                0.5,
+                1.02,
+                subtitle,
+                transform=ax.transAxes,
+                ha="center",
+                va="bottom",
+                color=muted,
+                fontsize="small",
+            )
+
+            if i == 0:
+                ax.quiverkey(
+                    quiver,
+                    X=0.98,
+                    Y=-0.035,
+                    U=key_speed,
+                    label=f"{key_speed:g} m s$^{{-1}}$",
+                    labelpos="W",
+                    coordinates="axes",
+                    color=ink,
+                    labelcolor=ink,
+                    fontproperties={"size": font_size * 0.8},
+                )
+
+        # Colourbar spans the full height of the grid.
+        fig.canvas.draw()
+        visible = [ax.get_position() for ax in axes[: len(cropped)]]
+        right = max(box.x1 for box in visible)
+        cax = fig.add_axes(
+            (
+                right + 0.02,
+                min(box.y0 for box in visible),
+                0.018,
+                max(box.y1 for box in visible) - min(box.y0 for box in visible),
+            )
+        )
+        colorbar = fig.colorbar(mesh, cax=cax, extend="max")
+        colorbar.set_label("Speed (m s$^{-1}$)", color=ink)
+        colorbar.outline.set_visible(False)
+
+        if output_path is not None:
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+            fig.savefig(output_path.with_suffix(".pdf"), dpi=dpi, bbox_inches="tight")
+
+    return fig
+
+
+def plot_velocity_comparison(
+    data_config: DataConfig,
+    exp_config: ExperimentConfig,
+    interpolation_exp: str,
+    unet_exp: str,
+    diffusion_exp: str,
+    time_idx: int = 0,
+    corners: Corners | None = None,
+    box_size: float = 3.0,
+    diffusion_residual_only: bool = False,
+    cmap: str = "viridis",
+    vmax: float | None = None,
+    output_path: str | Path | None = None,
+) -> Figure:
+    """
+    Compare ground truth, interpolation, U-Net and diffusion velocity fields in a 2x2 grid.
+
+    Predictions are read from ``<exp_config.base>/<name>/predictions.zarr`` for each
+    experiment name (e.g. ``"interpolate/baseline_trial"``). Only the plotted box is
+    read from disk.
+
+    Parameters
+    ----------
+    data_config, exp_config
+        Project configs (for the truth/degraded stores, grid and experiment base).
+
+    interpolation_exp, unet_exp, diffusion_exp : str
+        Experiment names holding each set of predictions.
+
+    time_idx : int, default 0
+        Index into the U-Net predictions' time axis. The other fields are
+        matched to that time.
+
+    corners : tuple or list, optional
+        Box to plot. Defaults to the ``box_size`` degree box with the fastest
+        mean currents at that time.
+
+    diffusion_residual_only : bool, default False
+        Set if the diffusion predictions are a residual to add to the U-Net output.
+
+    output_path : str or Path, optional
+        Defaults to ``images/comparison/velocity_comparison_t{time_idx}.png``.
+
+    Returns
+    -------
+    fig
+        Matplotlib figure.
+    """
+    factor = data_config.degrade_factor
+    predictions_name = Path(exp_config.model_predictions).name
+
+    def open_experiment(name: str) -> xr.Dataset:
+        path = Path(exp_config.base) / name / predictions_name
+        if not path.exists():
+            raise FileNotFoundError(f"Could not find predicted dataset at {path}")
+        return xr.open_zarr(path)
+
+    unet = open_experiment(unet_exp).isel(time_counter=time_idx)
+    time = unet.time_counter.values
+    interpolation = open_experiment(interpolation_exp).sel(time_counter=time)
+    diffusion = open_experiment(diffusion_exp).sel(time_counter=time)
+    truth = xr.open_zarr(data_config.original_res).sel(time_counter=time)
+
+    # Truth is stored untrimmed; the predictions all match the trimmed grid.
+    y_slice, x_slice = get_spatial_trim_slices(truth.sizes["x"], truth.sizes["y"], factor)
+    truth = truth.isel(y=y_slice, x=x_slice)
+
+    grid = np.load(data_config.grid_params)
+    lon = grid["rho_lon"][y_slice, x_slice]
+    lat = grid["rho_lat"][y_slice, x_slice]
+
+    if corners is None:
+        degraded = xr.open_zarr(data_config.degraded_res).sel(time_counter=time)
+        lr_speed = np.hypot(
+            degraded.velocity.isel(component=0).values, degraded.velocity.isel(component=1).values
+        )
+        lr_speed[lr_speed == 0] = np.nan
+        corners = most_energetic_box(
+            _block_average_2d(lon, factor, factor),
+            _block_average_2d(lat, factor, factor),
+            lr_speed,
+            box_size,
+        )
+        print(f"Auto-selected box (lon_min, lon_max, lat_min, lat_max): {corners}")
+
+    bounds = _parse_corners(corners)
+    if not isinstance(bounds, tuple):
+        raise ValueError("corners must give an explicit box.")
+    rows, cols = _box_slices(lon, lat, bounds)
+
+    def load(ds: xr.Dataset) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
+        vel = ds.velocity.isel(y=rows, x=cols).values.astype(float)
+        return vel[0], vel[1]
+
+    truth_u, truth_v = load(truth)
+    land = (truth_u == 0) & (truth_v == 0)
+
+    fields = {"Ground truth": (truth_u, truth_v)}
+    fields["Interpolation"] = load(interpolation)
+    fields["U-Net"] = load(unet)
+    diffusion_u, diffusion_v = load(diffusion)
+    if diffusion_residual_only:
+        diffusion_u = diffusion_u + fields["U-Net"][0]
+        diffusion_v = diffusion_v + fields["U-Net"][1]
+    fields["Diffusion"] = (diffusion_u, diffusion_v)
+
+    # The models predict over land too; blank it out with the truth's land mask.
+    for u, v in fields.values():
+        u[land] = np.nan
+        v[land] = np.nan
+
+    if output_path is None:
+        output_path = Path("images") / "comparison" / f"velocity_comparison_t{time_idx}.png"
+
+    print(f"Time: {str(time)[:16]}")
+    return plot_velocity_grid(
+        lon[rows, cols],
+        lat[rows, cols],
+        fields,
+        corners=bounds,
+        cmap=cmap,
+        vmax=vmax,
+        output_path=output_path,
+    )

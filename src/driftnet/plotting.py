@@ -335,3 +335,150 @@ def plot_velocity_quiver(
         fig.savefig(output_path, bbox_inches="tight")
 
     return fig, ax
+
+
+def velocity_to_t_points(
+    coord_data: dict,
+    u: ArrayLike,
+    v: ArrayLike,
+) -> tuple[NDArray[np.floating], NDArray[np.floating], NDArray, NDArray]:
+    """
+    Interpolate C-grid u and v onto shared cell centres (T points).
+
+    Assumes NEMO staggering: ``u[j, i]`` sits on the east face and ``v[j, i]``
+    on the north face of cell ``(j, i)``. The first row and column are dropped
+    because they have no west/south neighbour.
+
+    Works on NumPy or Dask arrays, with any number of leading (e.g. time) axes.
+
+    Returns
+    -------
+    lon, lat, u_t, v_t
+        2D T-point coordinates and the interpolated velocity components.
+    """
+    u = cast(NDArray, u)
+    v = cast(NDArray, v)
+
+    u_t = 0.5 * (u[..., 1:, 1:] + u[..., 1:, :-1])
+    v_t = 0.5 * (v[..., 1:, 1:] + v[..., :-1, 1:])
+
+    # T points share their row with u points and their column with v points.
+    lon = np.asarray(coord_data["v_lon"])[1:, 1:]
+    lat = np.asarray(coord_data["u_lat"])[1:, 1:]
+
+    return lon, lat, u_t, v_t
+
+
+def surface_speed(u_t: ArrayLike, v_t: ArrayLike) -> NDArray[np.floating]:
+    """Return current speed, with land (u = v = 0 or NaN) set to NaN."""
+    u_t = np.asarray(u_t, dtype=float)
+    v_t = np.asarray(v_t, dtype=float)
+
+    speed = np.hypot(u_t, v_t)
+    speed[(u_t == 0) & (v_t == 0)] = np.nan
+
+    return speed
+
+
+def plot_speed_map(
+    lon: NDArray[np.floating],
+    lat: NDArray[np.floating],
+    speed: NDArray[np.floating],
+    corners: Corners | None = None,
+    title: str | None = "Surface current speed",
+    cmap: str = "viridis",
+    vmax: float | None = None,
+    figsize: tuple[float, float] = (10, 10),
+    font_size: float = 14,
+    dpi: int = 300,
+    output_path: str | Path | None = "images/surface_speed.png",
+) -> tuple[Figure, Axes]:
+    """
+    Plot a map of surface current speed, styled for posters.
+
+    Parameters
+    ----------
+    lon, lat : 2D arrays
+        Coordinates of each speed value (e.g. from ``velocity_to_t_points``).
+
+    speed : 2D array
+        Current speed in m/s. NaNs (land) are left blank under the land mask.
+
+    corners : tuple or list, optional
+        Map extent, in any form accepted by ``plot_velocity_quiver``.
+        Defaults to the full model domain.
+
+    cmap : str, default "viridis"
+        Sequential colormap. "cmo.speed" works if ``cmocean`` is imported.
+
+    vmax : float, optional
+        Top of the colour scale. Defaults to the 99th percentile of speed so a
+        few extreme cells do not wash out the rest of the map.
+
+    dpi : int, default 300
+        Resolution of the saved PNG. A PDF is also saved alongside it, with the
+        speed field rasterised and the text/coastlines kept as vectors.
+
+    Returns
+    -------
+    fig, ax
+        Matplotlib figure and axis.
+    """
+    lon = np.asarray(lon)
+    lat = np.asarray(lat)
+    speed = np.asarray(speed)
+
+    if not (lon.shape == lat.shape == speed.shape):
+        raise ValueError("lon, lat and speed must all have the same shape.")
+
+    if vmax is None:
+        vmax = float(np.nanpercentile(speed, 99))
+
+    extent = _get_extent(lon, lat, corners=corners, padding=0)
+    projection = ccrs.PlateCarree()
+    land_colour = "#d9d9d9"
+
+    with plt.rc_context({"font.size": font_size}):
+        fig = plt.figure(figsize=figsize)
+        ax = cast(GeoAxes, plt.axes(projection=projection))
+        ax.set_extent(extent, crs=projection)
+        # Model land cells (NaN) that Natural Earth misses should still read as land.
+        ax.set_facecolor(land_colour)
+
+        mesh = ax.pcolormesh(
+            lon,
+            lat,
+            np.ma.masked_invalid(speed),
+            transform=projection,
+            cmap=cmap,
+            vmin=0,
+            vmax=vmax,
+            shading="nearest",
+            rasterized=True,
+        )
+
+        ax.add_feature(cfeature.LAND.with_scale("10m"), facecolor=land_colour, zorder=2)
+        ax.coastlines(resolution="10m", linewidth=0.6, color="#404040", zorder=3)
+
+        gridlines = ax.gridlines(
+            draw_labels=True, linewidth=0.4, color="white", alpha=0.4, linestyle="--"
+        )
+        gridlines.top_labels = False
+        gridlines.right_labels = False
+
+        colorbar = fig.colorbar(
+            mesh, ax=ax, orientation="horizontal", pad=0.06, shrink=0.8, extend="max"
+        )
+        colorbar.set_label("Surface current speed (m s$^{-1}$)")
+        colorbar.outline.set_visible(False)
+
+        if title is not None:
+            ax.set_title(title, fontweight="bold")
+
+        if output_path is not None:
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+            fig.savefig(output_path.with_suffix(".pdf"), dpi=dpi, bbox_inches="tight")
+
+    return fig, ax

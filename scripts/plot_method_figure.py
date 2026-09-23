@@ -1,16 +1,22 @@
 """
-Plot a poster figure of the downscaling method: truth -> degraded -> U-Net -> output,
-with the training loss loop, using real fields from one test-set time step.
+Plot a vertical poster figure of the downscaling method, using real fields from one
+test-set time step: truth -> degraded -> U-Net -> U-Net output (+ diffusion residual)
+-> final output, with the training losses marked.
+
+The U-Net predictions come from the config's experiment (or --unet-experiment), and
+the diffusion predictions from --diffusion-experiment. Both are read from
+``<experiment base>/<name>/predictions.zarr``.
 
 Examples
 --------
 Auto-pick a 3 degree box around the most energetic currents:
 
-    python scripts/plot_method_figure.py --config configs/default.yml
+    python scripts/plot_method_figure.py --diffusion-experiment diffusion/baseline_trial
 
 Choose the time step and zoom box yourself (lon_min lon_max lat_min lat_max):
 
-    python scripts/plot_method_figure.py --time-index 100 --corners 40 43 -25 -22
+    python scripts/plot_method_figure.py --diffusion-experiment diffusion/baseline_trial
+        --time-index 100 --corners 40 43 -25 -22
 """
 
 import argparse
@@ -66,6 +72,23 @@ def main():
         help="Path to the config file",
     )
     parser.add_argument(
+        "--diffusion-experiment",
+        type=str,
+        required=True,
+        help="Experiment holding the diffusion predictions, e.g. diffusion/baseline_trial",
+    )
+    parser.add_argument(
+        "--diffusion-residual-only",
+        action="store_true",
+        help="Set if the diffusion predictions are only the residual, not U-Net + residual",
+    )
+    parser.add_argument(
+        "--unet-experiment",
+        type=str,
+        default=None,
+        help="Experiment holding the U-Net predictions. Defaults to the config's experiment",
+    )
+    parser.add_argument(
         "--time-index", type=int, default=0, help="Index into the saved test-set predictions"
     )
     parser.add_argument(
@@ -91,8 +114,17 @@ def main():
     data, experiment = config.data, config.experiment
     factor = data.degrade_factor
 
-    predicted = xr.open_zarr(experiment.model_predictions).isel(time_counter=args.time_index)
-    time = predicted.time_counter.values
+    predictions_name = Path(experiment.model_predictions).name
+    unet_path = (
+        Path(experiment.base) / args.unet_experiment / predictions_name
+        if args.unet_experiment
+        else experiment.model_predictions
+    )
+    diffusion_path = Path(experiment.base) / args.diffusion_experiment / predictions_name
+
+    unet = xr.open_zarr(unet_path).isel(time_counter=args.time_index)
+    time = unet.time_counter.values
+    diffusion = xr.open_zarr(diffusion_path).sel(time_counter=time)
     truth = xr.open_zarr(data.original_res).sel(time_counter=time)
     degraded = xr.open_zarr(data.degraded_res).sel(time_counter=time)
 
@@ -108,9 +140,16 @@ def main():
 
     truth_speed = _speed(truth)
     degraded_speed = _speed(degraded)
-    predicted_speed = _speed(predicted)
-    # The model predicts over land too; blank it out with the truth's land mask.
-    predicted_speed[np.isnan(truth_speed)] = np.nan
+    unet_speed = _speed(unet)
+    if args.diffusion_residual_only:
+        final_velocity = unet.velocity.values + diffusion.velocity.values
+        final_speed = np.hypot(final_velocity[0], final_velocity[1]).astype(float)
+    else:
+        final_speed = _speed(diffusion)
+
+    # The models predict over land too; blank it out with the truth's land mask.
+    unet_speed[np.isnan(truth_speed)] = np.nan
+    final_speed[np.isnan(truth_speed)] = np.nan
 
     corners = args.corners or _most_energetic_box(lr_lon, lr_lat, degraded_speed, args.box_size)
     print(f"Time: {str(time)[:16]}, zoom box (lon_min, lon_max, lat_min, lat_max): {corners}")
@@ -122,7 +161,8 @@ def main():
         lr_lat,
         truth_speed,
         degraded_speed,
-        predicted_speed,
+        unet_speed,
+        final_speed,
         corners=corners,
         factor=factor,
         cmap=args.cmap,

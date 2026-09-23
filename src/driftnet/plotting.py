@@ -1424,7 +1424,7 @@ def _crop_to_box(
     return lon[r0:r1, c0:c1], lat[r0:r1, c0:c1], field[r0:r1, c0:c1]
 
 
-def _draw_unet(ax: Axes, factor: int, fill: str, edge: str, ink: str) -> None:
+def _draw_unet(ax: Axes, factor: int, fill: str, edge: str, ink: str, title: bool = True) -> None:
     """Draw a schematic U-Net (encoder, bottleneck, decoder, PixelShuffle head)."""
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
@@ -1494,7 +1494,91 @@ def _draw_unet(ax: Axes, factor: int, fill: str, edge: str, ink: str) -> None:
         fontsize="x-small",
         linespacing=1.1,
     )
-    ax.text(0.5, 1.0, "U-Net", ha="center", va="bottom", color=ink, fontweight="bold")
+    if title:
+        ax.text(0.5, 1.0, "U-Net", ha="center", va="bottom", color=ink, fontweight="bold")
+
+
+def _draw_diffusion(
+    ax: Axes,
+    residual: NDArray[np.floating],
+    fill: str,
+    edge: str,
+    ink: str,
+    muted: str,
+    land_colour: str,
+    seed: int = 0,
+) -> None:
+    """Draw a schematic diffusion model: noise -> denoising steps -> residual."""
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+    ax.add_patch(
+        mpatches.FancyBboxPatch(
+            (0.01, 0.01),
+            0.98,
+            0.98,
+            boxstyle="round,pad=0,rounding_size=0.04",
+            facecolor=fill,
+            edgecolor=edge,
+            linewidth=1.2,
+        )
+    )
+    ax.text(0.5, 0.9, "Diffusion model", ha="center", va="center", color=ink, fontweight="bold")
+
+    # Tiles show a real residual (truth - U-Net) emerging from noise.
+    rng = np.random.default_rng(seed)
+    scale = float(np.nanpercentile(np.abs(residual), 98)) or 1.0
+    noise = rng.standard_normal(residual.shape) * scale
+    noise[np.isnan(residual)] = np.nan
+    tiles = [noise, 0.5 * noise + residual, residual]
+    labels = ["Noise", "Denoise ×T", "Residual"]
+    residual_cmap = plt.get_cmap("RdBu_r").with_extremes(bad=land_colour)
+
+    tile_w, tile_h, tile_y = 0.25, 0.27, 0.42
+    tile_xs = [0.06, 0.375, 0.69]
+    for x, tile, label in zip(tile_xs, tiles, labels, strict=True):
+        tile_ax = ax.inset_axes((x, tile_y, tile_w, tile_h))
+        tile_ax.imshow(
+            np.ma.masked_invalid(tile),
+            origin="lower",
+            cmap=residual_cmap,
+            vmin=-scale,
+            vmax=scale,
+            aspect="auto",
+            interpolation="nearest",
+        )
+        tile_ax.set_xticks([])
+        tile_ax.set_yticks([])
+        for spine in tile_ax.spines.values():
+            spine.set_edgecolor(edge)
+        ax.text(
+            x + tile_w / 2,
+            tile_y - 0.03,
+            label,
+            ha="center",
+            va="top",
+            color=ink,
+            fontsize="x-small",
+        )
+
+    for x0, x1 in [(tile_xs[0] + tile_w, tile_xs[1]), (tile_xs[1] + tile_w, tile_xs[2])]:
+        ax.annotate(
+            "",
+            xy=(x1 - 0.01, tile_y + tile_h / 2),
+            xytext=(x0 + 0.01, tile_y + tile_h / 2),
+            arrowprops={"arrowstyle": "->", "color": ink, "linewidth": 1},
+        )
+
+    ax.text(
+        0.5,
+        0.14,
+        "conditioned on degraded\ninput + U-Net output",
+        ha="center",
+        va="center",
+        color=muted,
+        fontsize="x-small",
+        linespacing=1.2,
+    )
 
 
 def plot_method_figure(
@@ -1504,10 +1588,10 @@ def plot_method_figure(
     lr_lat: NDArray[np.floating],
     truth_speed: NDArray[np.floating],
     degraded_speed: NDArray[np.floating],
-    predicted_speed: NDArray[np.floating],
+    unet_speed: NDArray[np.floating],
+    final_speed: NDArray[np.floating],
     corners: Corners,
     factor: int = 5,
-    loss_name: str = "MSE",
     cmap: str = "viridis",
     vmax: float | None = None,
     font_size: float = 14,
@@ -1515,23 +1599,25 @@ def plot_method_figure(
     output_path: str | Path | None = "images/method_figure.png",
 ) -> Figure:
     """
-    Plot a poster schematic of the downscaling method on real fields.
+    Plot a vertical poster schematic of the downscaling method on real fields.
 
-    Left to right (inference, solid arrows): high-resolution truth -> degraded
-    input -> U-Net -> super-resolved output. A dashed loop underneath marks the
-    training-only step: the output is compared with the truth and the loss is
-    back-propagated into the U-Net.
+    Top to bottom (inference, solid arrows): high-resolution truth -> degraded
+    input -> U-Net -> U-Net output, plus a diffusion-generated residual -> final
+    output. A dashed line marks the training-only steps: the U-Net is trained
+    with an MSE loss against the truth, and the diffusion model with a denoising
+    loss on the residual (truth - U-Net output).
 
     Parameters
     ----------
     hr_lon, hr_lat : 2D arrays
-        Coordinates of the high-resolution (truth and predicted) grid.
+        Coordinates of the high-resolution grid (truth and both outputs).
 
     lr_lon, lr_lat : 2D arrays
         Coordinates of the degraded grid.
 
-    truth_speed, degraded_speed, predicted_speed : 2D arrays
-        Speed (m/s) on the matching grid. NaNs are drawn as land.
+    truth_speed, degraded_speed, unet_speed, final_speed : 2D arrays
+        Speed (m/s) on the matching grid; ``final_speed`` is U-Net + diffusion
+        residual. NaNs are drawn as land.
 
     corners : tuple or list
         Zoom box shown in each map panel, in any form accepted by
@@ -1540,9 +1626,6 @@ def plot_method_figure(
 
     factor : int, default 5
         Degradation / upscaling factor, used in the labels.
-
-    loss_name : str, default "MSE"
-        Name of the training loss, used in the labels.
 
     vmax : float, optional
         Top of the shared colour scale. Defaults to the 99th percentile of the
@@ -1557,42 +1640,63 @@ def plot_method_figure(
     if not isinstance(bounds, tuple):
         raise ValueError("corners must give an explicit zoom box.")
 
-    panels = [
-        ("High-resolution truth", *_crop_to_box(hr_lon, hr_lat, truth_speed, bounds)),
-        ("Degraded input", *_crop_to_box(lr_lon, lr_lat, degraded_speed, bounds)),
-        ("Super-resolved output", *_crop_to_box(hr_lon, hr_lat, predicted_speed, bounds)),
-    ]
+    truth_crop = _crop_to_box(hr_lon, hr_lat, truth_speed, bounds)
+    unet_crop = _crop_to_box(hr_lon, hr_lat, unet_speed, bounds)
     hr_km = grid_spacing_km(hr_lon, hr_lat)
     lr_km = grid_spacing_km(lr_lon, lr_lat)
-    subtitles = [f"~{hr_km:.1f} km grid", f"~{lr_km:.1f} km grid", f"~{hr_km:.1f} km grid"]
+    panels = [
+        ("High-resolution\ntruth", f"~{hr_km:.1f} km grid", truth_crop),
+        (
+            "Degraded\ninput",
+            f"~{lr_km:.1f} km grid",
+            _crop_to_box(lr_lon, lr_lat, degraded_speed, bounds),
+        ),
+        ("U-Net\noutput", "deterministic", unet_crop),
+        (
+            "U-Net +\ndiffusion",
+            "one stochastic\nsample",
+            _crop_to_box(hr_lon, hr_lat, final_speed, bounds),
+        ),
+    ]
 
     if vmax is None:
-        vmax = float(np.nanpercentile(panels[0][3], 99))
+        vmax = float(np.nanpercentile(truth_crop[2], 99))
 
     ink = "#262626"
     muted = "#595959"
     land_colour = "#d9d9d9"
     net_fill = "#c6d4e1"
     net_edge = "#4a6d8c"
+    diffusion_fill = "#eef2f6"
     train_colour = "#c0392b"
     projection = ccrs.PlateCarree()
 
+    # Lay out in inches from the top-left, then convert to figure fractions.
+    width, height = 10.0, 19.8
+    map_size, map_x0 = 3.4, 2.5
+    map_tops = [0.3, 4.5, 11.1, 15.7]
+    unet_box = (2.3, 8.4, 3.8, 2.2)  # x0, top, width, height
+    diffusion_box = (6.6, 11.9, 2.7, 3.0)
+    bus_x = 9.75
+
+    def fx(x: float) -> float:
+        return x / width
+
+    def fy(y: float) -> float:
+        return 1 - y / height
+
+    def rect(x0: float, top: float, w: float, h: float) -> tuple[float, float, float, float]:
+        return (fx(x0), fy(top + h), w / width, h / height)
+
     with plt.rc_context({"font.size": font_size}):
-        fig = plt.figure(figsize=(18, 6.4))
+        fig = plt.figure(figsize=(width, height))
 
-        map_bottom, map_height = 0.33, 0.56
-        map_axes_pos = {
-            0: (0.01, map_bottom, 0.21, map_height),
-            1: (0.27, map_bottom, 0.21, map_height),
-            2: (0.75, map_bottom, 0.21, map_height),
-        }
-        unet_ax = fig.add_axes((0.525, map_bottom + 0.06, 0.18, map_height - 0.1))
-        _draw_unet(unet_ax, factor, fill=net_fill, edge=net_edge, ink=ink)
-
-        mesh = None
         map_axes = []
-        for i, (title, lon, lat, speed) in enumerate(panels):
-            ax = cast(GeoAxes, fig.add_axes(map_axes_pos[i], projection=projection))
+        mesh = None
+        for top, (_, _, (lon, lat, speed)) in zip(map_tops, panels, strict=True):
+            ax = cast(
+                GeoAxes, fig.add_axes(rect(map_x0, top, map_size, map_size), projection=projection)
+            )
             ax.set_extent(bounds, crs=projection)
             ax.set_facecolor(land_colour)
             mesh = ax.pcolormesh(
@@ -1609,30 +1713,80 @@ def plot_method_figure(
             ax.add_feature(cfeature.LAND.with_scale("10m"), facecolor=land_colour, zorder=2)
             ax.coastlines(resolution="10m", linewidth=0.6, color="#404040", zorder=3)
             ax.spines["geo"].set_edgecolor(muted)
-            ax.set_title(f"{title}\n", fontweight="bold", color=ink, pad=4)
-            ax.text(
-                0.5,
-                1.02,
-                subtitles[i],
-                transform=ax.transAxes,
-                ha="center",
-                va="bottom",
-                color=muted,
-                fontsize="small",
-            )
             map_axes.append(ax)
+
+        unet_ax = fig.add_axes(rect(*unet_box))
+        _draw_unet(unet_ax, factor, fill=net_fill, edge=net_edge, ink=ink, title=False)
+
+        residual = truth_crop[2] - unet_crop[2]
+        diffusion_ax = fig.add_axes(rect(*diffusion_box))
+        _draw_diffusion(
+            diffusion_ax,
+            residual,
+            fill=diffusion_fill,
+            edge=net_edge,
+            ink=ink,
+            muted=muted,
+            land_colour=land_colour,
+        )
 
         # Map aspect is fixed by the zoom box, so read back where each panel landed.
         fig.canvas.draw()
         boxes = [ax.get_position() for ax in map_axes]
-        unet_box = unet_ax.get_position()
+        unet_pos = unet_ax.get_position()
+        diff_pos = diffusion_ax.get_position()
 
-        cax = fig.add_axes((boxes[2].x1 + 0.01, boxes[2].y0, 0.009, boxes[2].height))
+        for box, (title, subtitle, _) in zip(boxes, panels, strict=True):
+            label_x = box.x0 - fx(0.2)
+            mid = box.y0 + box.height / 2
+            fig.text(
+                label_x,
+                mid + 0.004,
+                title,
+                ha="right",
+                va="bottom",
+                color=ink,
+                fontweight="bold",
+                linespacing=1.1,
+            )
+            fig.text(
+                label_x,
+                mid - 0.004,
+                subtitle,
+                ha="right",
+                va="top",
+                color=muted,
+                fontsize="small",
+                linespacing=1.1,
+            )
+
+        unet_mid = unet_pos.y0 + 0.55 * unet_pos.height
+        fig.text(
+            boxes[0].x0 - fx(0.2),
+            unet_mid + 0.004,
+            "U-Net",
+            ha="right",
+            va="bottom",
+            color=ink,
+            fontweight="bold",
+        )
+        fig.text(
+            boxes[0].x0 - fx(0.2),
+            unet_mid - 0.004,
+            "encoder–\ndecoder",
+            ha="right",
+            va="top",
+            color=muted,
+            fontsize="small",
+            linespacing=1.1,
+        )
+
+        cax = fig.add_axes((boxes[3].x1 + fx(0.15), boxes[3].y0, fx(0.15), boxes[3].height))
         colorbar = fig.colorbar(mesh, cax=cax, extend="max")
         colorbar.set_label("Speed (m s$^{-1}$)", color=ink)
         colorbar.outline.set_visible(False)
 
-        def arrow(start, end, colour=ink, style="-", connection="arc3", width=2.0):
+        def arrow(start, end, colour=ink, style="-"):
             fig.add_artist(
                 mpatches.FancyArrowPatch(
                     start,
@@ -1641,91 +1795,100 @@ def plot_method_figure(
                     arrowstyle="-|>,head_length=0.6,head_width=0.3",
                     mutation_scale=14,
                     color=colour,
-                    linewidth=width,
+                    linewidth=2.0,
                     linestyle=style,
-                    connectionstyle=connection,
                     shrinkA=0,
                     shrinkB=0,
                 )
             )
 
-        def line(xs, ys, colour, style="--"):
+        def line(xs, ys, colour=ink, style="-"):
             fig.add_artist(
                 Line2D(xs, ys, transform=fig.transFigure, color=colour, lw=2.0, ls=style)
             )
 
-        mid_y = boxes[0].y0 + boxes[0].height / 2
-        gap = 0.008
+        cx = boxes[0].x0 + boxes[0].width / 2
+        gap = fy(0) - fy(0.08)
 
         # --- Inference path (solid) ---
-        arrow((boxes[0].x1 + gap, mid_y), (boxes[1].x0 - gap, mid_y))
+        arrow((cx, boxes[0].y0 - gap), (cx, boxes[1].y1 + gap))
         fig.text(
-            (boxes[0].x1 + boxes[1].x0) / 2,
-            mid_y + 0.03,
-            f"Degrade\n×{factor}",
-            ha="center",
-            va="bottom",
+            cx + fx(0.2),
+            (boxes[0].y0 + boxes[1].y1) / 2,
+            f"Degrade ×{factor}",
+            ha="left",
+            va="center",
             color=ink,
             fontsize="small",
         )
-        arrow((boxes[1].x1 + gap, mid_y), (unet_box.x0 - gap, mid_y))
-        arrow((unet_box.x1 + gap, mid_y), (boxes[2].x0 - gap, mid_y))
+        arrow((cx, boxes[1].y0 - gap), (cx, unet_pos.y1 + gap))
+        arrow((cx, unet_pos.y0 + gap), (cx, boxes[2].y1 + gap))
 
-        # --- Training loop (dashed) ---
-        loss_x = (boxes[2].x0 + boxes[2].x1) / 2
-        loss_y = 0.15
-        truth_x = (boxes[0].x0 + boxes[0].x1) / 2
-        unet_x = (unet_box.x0 + unet_box.x1) / 2
-        loss_text = fig.text(
-            loss_x,
-            loss_y,
-            f"{loss_name} loss",
+        # U-Net output + diffusion residual
+        plus_y = (boxes[2].y0 + boxes[3].y1) / 2
+        plus = fig.text(
+            cx,
+            plus_y,
+            "+",
             ha="center",
             va="center",
             color=ink,
             fontweight="bold",
-            bbox={
-                "boxstyle": "round,pad=0.5",
-                "facecolor": "white",
-                "edgecolor": train_colour,
-                "linewidth": 2,
-            },
+            fontsize="large",
+            bbox={"boxstyle": "circle,pad=0.2", "facecolor": "white", "edgecolor": ink, "lw": 2},
         )
-        # Measure the drawn loss box so the dashed lines meet its edges exactly.
         fig.canvas.draw()
-        loss_patch = loss_text.get_bbox_patch()
-        assert loss_patch is not None
-        loss_box = loss_patch.get_window_extent().transformed(fig.transFigure.inverted())
-        low_y = loss_box.y0 + 0.3 * loss_box.height
-        high_y = loss_box.y0 + 0.7 * loss_box.height
+        plus_patch = plus.get_bbox_patch()
+        assert plus_patch is not None
+        plus_box = plus_patch.get_window_extent().transformed(fig.transFigure.inverted())
+        arrow((cx, boxes[2].y0 - gap), (cx, plus_box.y1))
+        arrow((cx, plus_box.y0), (cx, boxes[3].y1 + gap))
 
-        # Truth -> loss (the target)
-        line([truth_x, truth_x], [boxes[0].y0 - gap, low_y], train_colour)
-        arrow((truth_x, low_y), (loss_box.x0, low_y), colour=train_colour, style="--")
+        diff_cx = diff_pos.x0 + diff_pos.width / 2
+        cond_y = boxes[2].y0 + 0.75 * boxes[2].height
+        arrow((boxes[2].x1 + gap / 2, cond_y), (diff_pos.x0, cond_y))
+        line([diff_cx, diff_cx], [diff_pos.y0, plus_y])
+        arrow((diff_cx, plus_y), (plus_box.x1, plus_y))
+
+        # --- Training (dashed): truth -> MSE for U-Net, denoising loss for diffusion ---
+        truth_y = boxes[0].y0 + boxes[0].height / 2
+        unet_y = unet_pos.y0 + unet_pos.height / 2
+        diff_y = diff_pos.y0 + diff_pos.height / 2
+        bus = fx(bus_x)
+
+        line([boxes[0].x1 + gap / 2, bus], [truth_y, truth_y], train_colour, "--")
+        line([bus, bus], [truth_y, diff_y], train_colour, "--")
+        arrow((bus, unet_y), (unet_pos.x1, unet_y), train_colour, "--")
+        arrow((bus, diff_y), (diff_pos.x1, diff_y), train_colour, "--")
+
         fig.text(
-            (truth_x + unet_x) / 2,
-            low_y - 0.012,
-            "Target",
+            (boxes[0].x1 + bus) / 2,
+            truth_y + 0.004,
+            "Truth = training target",
             ha="center",
-            va="top",
+            va="bottom",
             color=muted,
             fontsize="small",
         )
-
-        # Output -> loss (the prediction)
-        arrow((loss_x, boxes[2].y0 - gap), (loss_x, loss_box.y1), colour=train_colour, style="--")
-
-        # Loss -> U-Net (back-propagate)
-        line([loss_box.x0, unet_x], [high_y, high_y], train_colour)
-        arrow((unet_x, high_y), (unet_x, unet_box.y0 + 0.02), colour=train_colour, style="--")
         fig.text(
-            unet_x + 0.008,
-            (high_y + unet_box.y0) / 2,
-            "Update\nweights",
-            ha="left",
-            va="center",
-            color=muted,
+            (unet_pos.x1 + bus) / 2,
+            unet_y + 0.004,
+            "MSE loss",
+            ha="center",
+            va="bottom",
+            color=ink,
+            fontweight="bold",
             fontsize="small",
+        )
+        fig.text(
+            bus - fx(0.1),
+            (unet_y + diff_pos.y1) / 2,
+            "Denoising loss on\nresidual\n(truth − U-Net)",
+            ha="right",
+            va="center",
+            color=ink,
+            fontsize="small",
+            linespacing=1.15,
         )
 
         fig.legend(
@@ -1734,7 +1897,7 @@ def plot_method_figure(
                 Line2D([], [], color=train_colour, lw=2, ls="--", label="Training only"),
             ],
             loc="lower left",
-            bbox_to_anchor=(0.01, 0.0),
+            bbox_to_anchor=(fx(0.2), 0.0),
             ncol=2,
             frameon=False,
             fontsize="small",

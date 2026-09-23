@@ -38,7 +38,7 @@ def test_crop_to_box_outside_domain_raises(grids):
 def test_plot_method_figure_requires_box(grids):
     lon, lat, lr_lon, lr_lat = grids
     with pytest.raises(ValueError):
-        plot_method_figure(lon, lat, lr_lon, lr_lat, lon, lr_lon, lon, corners="auto")
+        plot_method_figure(lon, lat, lr_lon, lr_lat, lon, lr_lon, lon, lon, corners="auto")
 
 
 @patch("matplotlib.figure.Figure.savefig")
@@ -54,6 +54,7 @@ def test_plot_method_figure_saves_png_and_pdf(mock_savefig, grids, tmp_path):
         lr_lat,
         speed,
         lr_speed,
+        speed,
         speed,
         corners=(40.3, 41.5, -10.7, -9.5),
         output_path=output,

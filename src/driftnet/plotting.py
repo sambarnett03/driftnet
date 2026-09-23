@@ -1937,16 +1937,16 @@ def plot_velocity_grid(
     corners: Corners,
     cmap: str = "viridis",
     vmax: float | None = None,
-    arrows_across: int = 20,
     font_size: float = 14,
     dpi: int = 300,
     output_path: str | Path | None = "images/comparison/velocity_comparison.png",
 ) -> Figure:
     """
-    Plot up to four velocity fields in a 2x2 grid: speed in colour, with arrows.
+    Plot the speed of up to four velocity fields in a 2x2 grid.
 
     The first entry of ``fields`` is treated as the reference (ground truth):
-    every other panel's subtitle gives its RMSE against it inside the box.
+    every other panel's subtitle gives its velocity RMSE (from u and v) against it
+    inside the box.
 
     Parameters
     ----------
@@ -1961,10 +1961,7 @@ def plot_velocity_grid(
 
     vmax : float, optional
         Top of the shared colour scale. Defaults to the 99th percentile of the
-        reference speed inside the box. Arrows share one scale, set from it.
-
-    arrows_across : int, default 20
-        Approximate number of arrows across each panel.
+        reference speed inside the box.
 
     Returns
     -------
@@ -1990,12 +1987,6 @@ def plot_velocity_grid(
 
     if vmax is None:
         vmax = float(np.nanpercentile(speeds[reference], 99))
-
-    stride = max(lon.shape[1] // arrows_across, 1)
-    arrow_spacing = float(np.nanmedian(np.abs(np.diff(lon, axis=1)))) * stride
-    # An arrow at vmax is ~1.2 arrow spacings long.
-    arrow_scale = vmax / (1.2 * arrow_spacing)
-    key_speed = float(f"{0.5 * vmax:.1g}")
 
     ink = "#262626"
     muted = "#595959"
@@ -2030,21 +2021,8 @@ def plot_velocity_grid(
                 shading="nearest",
                 rasterized=True,
             )
-            quiver = ax.quiver(
-                lon[::stride, ::stride],
-                lat[::stride, ::stride],
-                np.ma.masked_invalid(u[::stride, ::stride]),
-                np.ma.masked_invalid(v[::stride, ::stride]),
-                transform=projection,
-                angles="xy",
-                scale_units="xy",
-                scale=arrow_scale,
-                width=0.003,
-                color=ink,
-                zorder=4,
-            )
-            ax.add_feature(cfeature.LAND.with_scale("10m"), facecolor=land_colour, zorder=5)
-            ax.coastlines(resolution="10m", linewidth=0.6, color="#404040", zorder=6)
+            ax.add_feature(cfeature.LAND.with_scale("10m"), facecolor=land_colour, zorder=2)
+            ax.coastlines(resolution="10m", linewidth=0.6, color="#404040", zorder=3)
             ax.spines["geo"].set_edgecolor(muted)
 
             gridlines = ax.gridlines(
@@ -2060,7 +2038,7 @@ def plot_velocity_grid(
                 subtitle = "reference"
             else:
                 error = np.sqrt(np.nanmean((u - ref_u) ** 2 + (v - ref_v) ** 2))
-                subtitle = f"RMSE vs {reference.lower()}: {error:.3f} m s$^{{-1}}$"
+                subtitle = f"Velocity RMSE vs {reference.lower()}: {error:.3f} m s$^{{-1}}$"
             ax.text(
                 0.5,
                 1.02,
@@ -2071,20 +2049,6 @@ def plot_velocity_grid(
                 color=muted,
                 fontsize="small",
             )
-
-            if i == 0:
-                ax.quiverkey(
-                    quiver,
-                    X=0.98,
-                    Y=-0.035,
-                    U=key_speed,
-                    label=f"{key_speed:g} m s$^{{-1}}$",
-                    labelpos="W",
-                    coordinates="axes",
-                    color=ink,
-                    labelcolor=ink,
-                    fontproperties={"size": font_size * 0.8},
-                )
 
         # Colourbar spans the full height of the grid.
         fig.canvas.draw()

@@ -1,7 +1,7 @@
 """
 Plot a vertical poster figure of the downscaling method, using real fields from one
-test-set time step: truth -> degraded -> U-Net -> U-Net output (+ diffusion residual)
--> final output, with the training losses marked.
+test-set time step: truth -> degraded input, which feeds a U-Net and a diffusion model
+side by side, each with its own output. The training losses are marked.
 
 The U-Net predictions come from the config's experiment (or --unet-experiment), and
 the diffusion predictions from --diffusion-experiment. Both are read from
@@ -80,7 +80,7 @@ def main():
     parser.add_argument(
         "--diffusion-residual-only",
         action="store_true",
-        help="Set if the diffusion predictions are only the residual, not U-Net + residual",
+        help="Set if the diffusion predictions are a residual to add to the U-Net output",
     )
     parser.add_argument(
         "--unet-experiment",
@@ -143,13 +143,13 @@ def main():
     unet_speed = _speed(unet)
     if args.diffusion_residual_only:
         final_velocity = unet.velocity.values + diffusion.velocity.values
-        final_speed = np.hypot(final_velocity[0], final_velocity[1]).astype(float)
+        diffusion_speed = np.hypot(final_velocity[0], final_velocity[1]).astype(float)
     else:
-        final_speed = _speed(diffusion)
+        diffusion_speed = _speed(diffusion)
 
     # The models predict over land too; blank it out with the truth's land mask.
     unet_speed[np.isnan(truth_speed)] = np.nan
-    final_speed[np.isnan(truth_speed)] = np.nan
+    diffusion_speed[np.isnan(truth_speed)] = np.nan
 
     corners = args.corners or _most_energetic_box(lr_lon, lr_lat, degraded_speed, args.box_size)
     print(f"Time: {str(time)[:16]}, zoom box (lon_min, lon_max, lat_min, lat_max): {corners}")
@@ -162,7 +162,7 @@ def main():
         truth_speed,
         degraded_speed,
         unet_speed,
-        final_speed,
+        diffusion_speed,
         corners=corners,
         factor=factor,
         cmap=args.cmap,

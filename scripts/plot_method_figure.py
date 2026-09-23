@@ -24,10 +24,9 @@ from pathlib import Path
 
 import numpy as np
 import xarray as xr
-from scipy.ndimage import uniform_filter
 
 from driftnet.config import MasterConfig
-from driftnet.plotting import _block_average_2d, plot_method_figure
+from driftnet.plotting import _block_average_2d, most_energetic_box, plot_method_figure
 from driftnet.utils import get_spatial_trim_slices
 
 
@@ -38,29 +37,6 @@ def _speed(ds: xr.Dataset) -> np.ndarray:
     speed = np.hypot(u, v)
     speed[(u == 0) & (v == 0)] = np.nan
     return speed
-
-
-def _most_energetic_box(
-    lon: np.ndarray, lat: np.ndarray, speed: np.ndarray, size_deg: float
-) -> tuple[float, float, float, float]:
-    """Return the size_deg x size_deg box with the highest mean speed (land counts as 0)."""
-    spacing = float(np.nanmedian(np.abs(np.diff(lon, axis=1))))
-    window = max(int(round(size_deg / spacing)), 1)
-    mean_speed = uniform_filter(np.nan_to_num(speed), size=window, mode="constant")
-
-    # Keep the whole box inside the domain.
-    half = window // 2
-    mean_speed[:half], mean_speed[-half:] = 0, 0
-    mean_speed[:, :half], mean_speed[:, -half:] = 0, 0
-
-    j, i = np.unravel_index(np.argmax(mean_speed), mean_speed.shape)
-    lon_c, lat_c = float(lon[j, i]), float(lat[j, i])
-    return (
-        lon_c - size_deg / 2,
-        lon_c + size_deg / 2,
-        lat_c - size_deg / 2,
-        lat_c + size_deg / 2,
-    )
 
 
 def main():
@@ -151,7 +127,7 @@ def main():
     unet_speed[np.isnan(truth_speed)] = np.nan
     diffusion_speed[np.isnan(truth_speed)] = np.nan
 
-    corners = args.corners or _most_energetic_box(lr_lon, lr_lat, degraded_speed, args.box_size)
+    corners = args.corners or most_energetic_box(lr_lon, lr_lat, degraded_speed, args.box_size)
     print(f"Time: {str(time)[:16]}, zoom box (lon_min, lon_max, lat_min, lat_max): {corners}")
 
     plot_method_figure(

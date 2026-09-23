@@ -3,7 +3,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from driftnet.plotting import plot_speed_map, surface_speed, velocity_to_t_points
+from driftnet.plotting import _domain_outline, plot_speed_map, surface_speed, velocity_to_t_points
 
 
 @pytest.fixture
@@ -56,3 +56,12 @@ def test_plot_speed_map_saves_png_and_pdf(mock_savefig, mock_coord_data, tmp_pat
     saved = [call.args[0] for call in mock_savefig.call_args_list]
     assert saved == [output, output.with_suffix(".pdf")]
     assert ax.get_title() == "Surface current speed"
+
+
+def test_domain_outline_traces_grid_edge(mock_coord_data):
+    lon, lat = mock_coord_data["v_lon"], mock_coord_data["u_lat"]
+    outline_lon, outline_lat = _domain_outline(lon, lat)
+
+    assert outline_lon.min() == lon.min() and outline_lon.max() == lon.max()
+    assert outline_lat.min() == lat.min() and outline_lat.max() == lat.max()
+    assert (outline_lon[0], outline_lat[0]) == (outline_lon[-1], outline_lat[-1])

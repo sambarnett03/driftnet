@@ -1227,6 +1227,57 @@ def surface_speed(u_t: ArrayLike, v_t: ArrayLike) -> NDArray[np.floating]:
     return speed
 
 
+def _domain_outline(
+    lon: NDArray[np.floating], lat: NDArray[np.floating]
+) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
+    """Return the closed lon/lat boundary of a 2D grid, traced anticlockwise."""
+    edges_lon = [lon[0, :], lon[:, -1], lon[-1, ::-1], lon[::-1, 0]]
+    edges_lat = [lat[0, :], lat[:, -1], lat[-1, ::-1], lat[::-1, 0]]
+    return np.concatenate(edges_lon), np.concatenate(edges_lat)
+
+
+def _add_domain_inset(
+    ax: GeoAxes,
+    lon: NDArray[np.floating],
+    lat: NDArray[np.floating],
+    bounds: Sequence[float],
+    land_colour: str,
+    outline_colour: str = "#d62728",
+) -> GeoAxes:
+    """Add a small globe to ``ax`` with the model domain outlined on it."""
+    centre_lon = float(np.nanmean(lon))
+    centre_lat = float(np.nanmean(lat))
+    globe = cast(
+        GeoAxes,
+        ax.inset_axes(
+            list(bounds),
+            projection=ccrs.Orthographic(centre_lon, max(min(centre_lat, 30), -30)),
+            zorder=5,
+        ),
+    )
+    globe.set_global()
+    globe.set_facecolor("white")
+    globe.add_feature(cfeature.LAND.with_scale("110m"), facecolor=land_colour)
+    globe.coastlines(resolution="110m", linewidth=0.4, color="#404040")
+    globe.gridlines(linewidth=0.3, color="#999999", alpha=0.6)
+
+    outline_lon, outline_lat = _domain_outline(np.asarray(lon), np.asarray(lat))
+    globe.fill(
+        outline_lon,
+        outline_lat,
+        transform=ccrs.PlateCarree(),
+        facecolor=outline_colour,
+        alpha=0.25,
+        edgecolor="none",
+    )
+    globe.plot(
+        outline_lon, outline_lat, transform=ccrs.PlateCarree(), color=outline_colour, linewidth=1.5
+    )
+    globe.spines["geo"].set_edgecolor("#404040")
+
+    return globe
+
+
 def plot_speed_map(
     lon: NDArray[np.floating],
     lat: NDArray[np.floating],
@@ -1237,6 +1288,8 @@ def plot_speed_map(
     vmax: float | None = None,
     figsize: tuple[float, float] = (10, 10),
     font_size: float = 14,
+    inset: bool = True,
+    inset_bounds: Sequence[float] = (0.01, 0.01, 0.3, 0.3),
     dpi: int = 300,
     output_path: str | Path | None = "images/surface_speed.png",
 ) -> tuple[Figure, Axes]:
@@ -1261,6 +1314,13 @@ def plot_speed_map(
     vmax : float, optional
         Top of the colour scale. Defaults to the 99th percentile of speed so a
         few extreme cells do not wash out the rest of the map.
+
+    inset : bool, default True
+        Add a small globe showing where the model domain sits.
+
+    inset_bounds : sequence of float, default (0.01, 0.01, 0.3, 0.3)
+        Inset position and size as (x0, y0, width, height) in axis fractions.
+        The default puts it bottom-left, over the African landmass.
 
     dpi : int, default 300
         Resolution of the saved PNG. A PDF is also saved alongside it, with the
@@ -1319,6 +1379,9 @@ def plot_speed_map(
         )
         colorbar.set_label("Surface current speed (m s$^{-1}$)")
         colorbar.outline.set_visible(False)
+
+        if inset:
+            _add_domain_inset(ax, lon, lat, inset_bounds, land_colour)
 
         if title is not None:
             ax.set_title(title, fontweight="bold")

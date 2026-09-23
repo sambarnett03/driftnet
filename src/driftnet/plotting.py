@@ -1309,7 +1309,7 @@ def plot_speed_map(
         Defaults to "auto", the full model domain.
 
     cmap : str, default "viridis"
-        Sequential colormap. "cmo.speed" works if ``cmocean`` is imported.
+        Sequential colormap. "cmo.speed" works once ``cmocean`` has been imported.
 
     vmax : float, optional
         Top of the colour scale. Defaults to the 99th percentile of speed so a

@@ -32,7 +32,8 @@ dependencies = [
     "torch",
     "rich",
     "parcels",
-    "polars"
+    "polars",
+    "cmocean"
 ]
 
 # 🛠️ DEVELOPMENT DEPENDENCIES

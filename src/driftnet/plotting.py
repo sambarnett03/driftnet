@@ -1374,9 +1374,9 @@ def plot_speed_map(
         gridlines.top_labels = False
         gridlines.right_labels = False
 
-        colorbar = fig.colorbar(
-            mesh, ax=ax, orientation="horizontal", pad=0.06, shrink=0.8, extend="max"
-        )
+        # Anchor the colourbar to the map's edge so it matches the map's height.
+        cax = ax.inset_axes((1.03, 0.0, 0.035, 1.0))
+        colorbar = fig.colorbar(mesh, cax=cax, orientation="vertical", extend="max")
         colorbar.set_label("Surface current speed (m s$^{-1}$)")
         colorbar.outline.set_visible(False)
 

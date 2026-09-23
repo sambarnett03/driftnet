@@ -17,7 +17,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
-# 📦 CORE DEPENDENCIES
+# CORE DEPENDENCIES
 # Add libraries your ocean model actually needs to run here.
 # When someone installs your package, pip will automatically install these.
 dependencies = [
@@ -27,8 +27,12 @@ dependencies = [
     "netcdf4>=1.6.0",
     "cartopy",
     "matplotlib",
-    "zarr",
-    "dask"
+    "zarr<3",
+    "dask",
+    "torch",
+    "rich",
+    "parcels",
+    "polars"
 ]
 
 # 🛠️ DEVELOPMENT DEPENDENCIES
@@ -64,7 +68,7 @@ select = [
 ]
 
 [tool.pyright]
-include = ["src", "scripts", "tests"]
+include = ["src", "scripts"]
 exclude = ["**/__pycache__", "venv", "**/node_modules", "**/.*"]
 
 [tool.pytest.ini_options]

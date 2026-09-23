@@ -1,17 +1,30 @@
+import math
+import os
 from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
+from typing import Any, Literal, cast, get_args
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
+import polars as pl
+import xarray as xr
 from cartopy.mpl.geoaxes import GeoAxes
 from matplotlib.axes import Axes
+from matplotlib.collections import QuadMesh
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 from matplotlib.quiver import Quiver
 from numpy.typing import ArrayLike, NDArray
+from scipy.stats import gaussian_kde
+from matplotlib.ticker import ScalarFormatter
+
+from driftnet.config import DataConfig, ExperimentConfig
+from driftnet.generated_types import ExperimentPathType
+from driftnet.utils import _get_valid_spatial_slices, extract_trajectories
+from driftnet.generated_types import MetricType
 
 Bounds = tuple[float, float, float, float]
 BoundsLike = Sequence[float]
@@ -20,10 +33,13 @@ CornerPoints = Sequence[CornerPoint]
 Corners = BoundsLike | CornerPoints
 
 
-def _parse_corners(corners: Corners | None) -> Bounds | None:
+def _parse_corners(corners: Corners | None | str) -> Bounds | None | str:
     """Return lon/lat bounds from either bounds or four corner points."""
     if corners is None:
         return None
+
+    if corners == "auto":
+        return "auto"
 
     corners_array = np.asarray(corners, dtype=float)
 
@@ -42,7 +58,7 @@ def _parse_corners(corners: Corners | None) -> Bounds | None:
         )
 
     raise ValueError(
-        "corners must be either "
+        "corners must be either 'auto', None, "
         "(lon_min, lon_max, lat_min, lat_max) or "
         "[(lon1, lat1), ..., (lon4, lat4)]."
     )
@@ -51,21 +67,22 @@ def _parse_corners(corners: Corners | None) -> Bounds | None:
 def _get_extent(
     lon: NDArray[np.floating],
     lat: NDArray[np.floating],
-    corners: Corners | None = None,
-    padding: float = 2,
-) -> Bounds:
-    """Return plot extent, using corners if supplied."""
+    corners: Corners | None | str = None,
+    padding: float = 2.0,
+) -> Bounds | None:
+    """Return plot extent, using corners if supplied. Returns None for full map."""
     corner_bounds = _parse_corners(corners)
 
-    if corner_bounds is not None:
-        return corner_bounds
+    if corner_bounds == "auto":
+        return (
+            float(np.nanmin(lon) - padding),
+            float(np.nanmax(lon) + padding),
+            float(np.nanmin(lat) - padding),
+            float(np.nanmax(lat) + padding),
+        )
 
-    return (
-        float(np.nanmin(lon) - padding),
-        float(np.nanmax(lon) + padding),
-        float(np.nanmin(lat) - padding),
-        float(np.nanmax(lat) + padding),
-    )
+    # This will return either the explicit bounds tuple, or None
+    return cast(Bounds | None, corner_bounds)
 
 
 def _clip_to_extent(
@@ -73,7 +90,7 @@ def _clip_to_extent(
     lat: NDArray[np.floating],
     u: NDArray[np.floating],
     v: NDArray[np.floating],
-    extent: Bounds,
+    extent: Bounds | None,
 ) -> tuple[
     NDArray[np.floating],
     NDArray[np.floating],
@@ -81,11 +98,31 @@ def _clip_to_extent(
     NDArray[np.floating],
 ]:
     """Clip coordinates and velocity components to the given extent."""
+    if extent is None:
+        return lon, lat, u, v
+
     lon_min, lon_max, lat_min, lat_max = extent
 
     mask = (lon >= lon_min) & (lon <= lon_max) & (lat >= lat_min) & (lat <= lat_max)
 
     return lon[mask], lat[mask], u[mask], v[mask]
+
+
+def _block_average_2d(
+    arr: NDArray[np.floating], row_stride: int, col_stride: int
+) -> NDArray[np.floating]:
+    """Helper to block-average a single 2D array with independent row/col strides."""
+    if row_stride <= 1 and col_stride <= 1:
+        return arr
+
+    h, w = arr.shape
+    h_trunc = h - (h % row_stride)
+    w_trunc = w - (w % col_stride)
+    arr_trunc = arr[:h_trunc, :w_trunc]
+
+    return arr_trunc.reshape(
+        h_trunc // row_stride, row_stride, w_trunc // col_stride, col_stride
+    ).mean(axis=(1, 3))
 
 
 def _downsample(
@@ -100,12 +137,18 @@ def _downsample(
     NDArray[np.floating],
     NDArray[np.floating],
 ]:
-    """Downsample coordinates and velocity components."""
+    """
+    Downsample coordinates and velocity components by block averaging.
+    Uses fast NumPy reshaping to calculate the mean of non-overlapping blocks.
+    """
+    if stride <= 1:
+        return lon, lat, u, v
+
     return (
-        lon[::stride, ::stride],
-        lat[::stride, ::stride],
-        u[::stride, ::stride],
-        v[::stride, ::stride],
+        _block_average_2d(lon, stride, stride),
+        _block_average_2d(lat, stride, stride),
+        _block_average_2d(u, stride, stride),
+        _block_average_2d(v, stride, stride),
     )
 
 
@@ -131,13 +174,13 @@ def _get_gridline_values(
 
 def _add_gridlines(
     ax: GeoAxes,
-    extent: Bounds,
+    extent: Bounds | None,
     gridline_interval: float | None,
 ) -> None:
     """Add labelled gridlines, optionally at a fixed degree interval."""
     gridlines = ax.gridlines(draw_labels=True)
 
-    if gridline_interval is None:
+    if gridline_interval is None or extent is None:
         return
 
     if gridline_interval <= 0:
@@ -159,7 +202,7 @@ def _plot_quiver_component(
     lat: NDArray[np.floating],
     u: NDArray[np.floating],
     v: NDArray[np.floating],
-    extent: Bounds,
+    extent: Bounds | None,
     stride: int,
     scale: float | None,
 ) -> Quiver:
@@ -184,63 +227,20 @@ def _plot_quiver_component(
 
 
 def plot_velocity_quiver(
-    coord_data: dict,
+    coord_data: dict[str, Any],
     u_input: ArrayLike | None = None,
     v_input: ArrayLike | None = None,
-    corners: Corners | None = None,
+    corners: Corners | None | str = None,
     stride: int = 10,
     title: str = "Surface velocity",
     scale: float | None = None,
     figsize: tuple[float, float] = (8, 8),
     output_path: str | Path | None = "images/velocity_field.png",
     gridline_interval: float | None = None,
-) -> tuple[Figure, Axes]:
+    ax: GeoAxes | Axes | None = None,
+) -> tuple[Figure, GeoAxes]:
     """
     Plot velocity vectors, optionally clipped to a lon/lat box.
-
-    Parameters
-    ----------
-    coord_data : dict
-
-    u_input, v_input : array-like, optional
-        2D velocity components. At least one must be supplied. If only one
-        component is supplied, the missing component is plotted as zero.
-
-    corners : tuple or list, optional
-        Clip box corners. May be either:
-
-        ``(lon_min, lon_max, lat_min, lat_max)``
-
-        or four corner points:
-
-        ``[(lon1, lat1), (lon2, lat2), (lon3, lat3), (lon4, lat4)]``
-
-        The function uses the min/max longitude and latitude of the corners.
-
-    stride : int, default 10
-        Plot every ``stride`` grid point.
-
-    title : str, default "Surface velocity"
-        Plot title.
-
-    scale : float, optional
-        Quiver scale. Larger values make arrows smaller.
-
-    figsize : tuple, default (8, 8)
-        Figure size.
-
-    output_path : str or pathlib.Path, optional
-        Path where the figure is saved. If ``None``, the figure is not saved.
-
-    gridline_interval : float, optional
-        Interval in degrees between labelled longitude and latitude gridlines.
-        For example, ``gridline_interval=0.02`` draws gridlines every
-        0.02 degrees.
-
-    Returns
-    -------
-    fig, ax
-        Matplotlib figure and axis.
     """
     if u_input is None and v_input is None:
         raise TypeError("Received None for both u_input and v_input.")
@@ -249,12 +249,24 @@ def plot_velocity_quiver(
         raise ValueError("stride must be a positive integer.")
 
     projection = ccrs.PlateCarree()
-    fig = plt.figure(figsize=figsize)
-    ax = cast(GeoAxes, plt.axes(projection=projection))
+
+    if ax is None:
+        fig = plt.figure(figsize=figsize)
+        ax = cast(GeoAxes, plt.axes(projection=projection))
+    else:
+        ax = cast(GeoAxes, ax)
+        raw_fig = ax.figure
+
+        while not isinstance(raw_fig, Figure) and hasattr(raw_fig, "figure"):
+            raw_fig = raw_fig.figure
+
+        if not isinstance(raw_fig, Figure):
+            raise TypeError("Could not resolve the root matplotlib Figure from the provided ax.")
+
+        fig = raw_fig
 
     if u_input is not None:
         nlat, nlon = np.array(u_input).shape
-
     else:
         nlat, nlon = np.array(v_input).shape
 
@@ -268,10 +280,11 @@ def plot_velocity_quiver(
     res_lat = base_lat // nlat
     res_lon = base_lon // nlon
 
-    u_lon = u_lon[::res_lon, ::res_lon]
-    v_lon = v_lon[::res_lon, ::res_lon]
-    u_lat = u_lat[::res_lat, ::res_lat]
-    v_lat = v_lat[::res_lat, ::res_lat]
+    # Degrade the coordinate grids to match the input velocity resolution via block averaging
+    u_lon = _block_average_2d(u_lon, res_lat, res_lon)
+    v_lon = _block_average_2d(v_lon, res_lat, res_lon)
+    u_lat = _block_average_2d(u_lat, res_lat, res_lon)
+    v_lat = _block_average_2d(v_lat, res_lat, res_lon)
 
     extent_lons = []
     extent_lats = []
@@ -288,7 +301,9 @@ def plot_velocity_quiver(
     lat_for_extent = np.concatenate([lat.ravel() for lat in extent_lats])
     extent = _get_extent(lon_for_extent, lat_for_extent, corners=corners)
 
-    ax.set_extent(extent, crs=projection)
+    if extent is not None:
+        ax.set_extent(extent, crs=projection)
+
     _add_map_features(ax)
 
     if u_input is not None:
@@ -337,148 +352,834 @@ def plot_velocity_quiver(
     return fig, ax
 
 
-def velocity_to_t_points(
-    coord_data: dict,
-    u: ArrayLike,
-    v: ArrayLike,
-) -> tuple[NDArray[np.floating], NDArray[np.floating], NDArray, NDArray]:
+def plot_cgrid_subset(
+    coord_data: dict[str, Any],
+    i_range: tuple[int, int] = (0, 10),
+    j_range: tuple[int, int] = (0, 10),
+) -> None:
     """
-    Interpolate C-grid u and v onto shared cell centres (T points).
-
-    Assumes NEMO staggering: ``u[j, i]`` sits on the east face and ``v[j, i]``
-    on the north face of cell ``(j, i)``. The first row and column are dropped
-    because they have no west/south neighbour.
-
-    Works on NumPy or Dask arrays, with any number of leading (e.g. time) axes.
-
-    Returns
-    -------
-    lon, lat, u_t, v_t
-        2D T-point coordinates and the interpolated velocity components.
+    Plots a subset of the C-grid data.
+    i_range and j_range define the slice to visualize.
     """
-    u = cast(NDArray, u)
-    v = cast(NDArray, v)
 
-    u_t = 0.5 * (u[..., 1:, 1:] + u[..., 1:, :-1])
-    v_t = 0.5 * (v[..., 1:, 1:] + v[..., :-1, 1:])
+    # Slice the data
+    u_lon = coord_data["u_lon"][j_range[0] : j_range[1], i_range[0] : i_range[1]]
+    u_lat = coord_data["u_lat"][j_range[0] : j_range[1], i_range[0] : i_range[1]]
 
-    # T points share their row with u points and their column with v points.
-    lon = np.asarray(coord_data["v_lon"])[1:, 1:]
-    lat = np.asarray(coord_data["u_lat"])[1:, 1:]
+    v_lon = coord_data["v_lon"][j_range[0] : j_range[1], i_range[0] : i_range[1]]
+    v_lat = coord_data["v_lat"][j_range[0] : j_range[1], i_range[0] : i_range[1]]
 
-    return lon, lat, u_t, v_t
+    rho_lon = coord_data["rho_lon"][j_range[0] : j_range[1], i_range[0] : i_range[1]]
+    rho_lat = coord_data["rho_lat"][j_range[0] : j_range[1], i_range[0] : i_range[1]]
+
+    # Create the plot
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    # Plotting the points
+    ax.scatter(rho_lon, rho_lat, color="blue", label="Rho points", marker="o", s=100, alpha=0.6)
+    ax.scatter(u_lon, u_lat, color="red", label="U points", marker=">", s=100, alpha=0.6)
+    ax.scatter(v_lon, v_lat, color="green", label="V points", marker="^", s=100, alpha=0.6)
+
+    ax.set_title(f"C-Grid Visualization (Subset {i_range}, {j_range})")
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    ax.legend()
+    plt.savefig("images/cgrid.png")
 
 
-def surface_speed(u_t: ArrayLike, v_t: ArrayLike) -> NDArray[np.floating]:
-    """Return current speed, with land (u = v = 0 or NaN) set to NaN."""
-    u_t = np.asarray(u_t, dtype=float)
-    v_t = np.asarray(v_t, dtype=float)
-
-    speed = np.hypot(u_t, v_t)
-    speed[(u_t == 0) & (v_t == 0)] = np.nan
-
-    return speed
-
-
-def plot_speed_map(
-    lon: NDArray[np.floating],
-    lat: NDArray[np.floating],
-    speed: NDArray[np.floating],
-    corners: Corners | None = None,
-    title: str | None = "Surface current speed",
-    cmap: str = "viridis",
+def plot_velocity_heatmap(
+    ax: GeoAxes | Axes,
+    grid_coords_path: Path,
+    vel: NDArray[np.floating],
+    add_map_features: bool = True,
+    cmap: str = "RdBu_r",
+    vmin: float | None = None,
     vmax: float | None = None,
-    figsize: tuple[float, float] = (10, 10),
-    font_size: float = 14,
-    dpi: int = 300,
-    output_path: str | Path | None = "images/surface_speed.png",
-) -> tuple[Figure, Axes]:
+    corners: Corners | None | str = None,
+) -> QuadMesh:
     """
-    Plot a map of surface current speed, styled for posters.
+    Plots a heatmap for velocity data on a given axis, optionally adding a zoomed-in Cartopy map.
 
-    Parameters
-    ----------
-    lon, lat : 2D arrays
-        Coordinates of each speed value (e.g. from ``velocity_to_t_points``).
+    Parameters:
+    - ax: matplotlib axis (must be a Cartopy GeoAxes if add_map_features is True)
+    - lon: 2D numpy array of longitudes
+    - lat: 2D numpy array of latitudes
+    - vel: 2D numpy array of velocities (u or v)
+    - add_map_features: bool, whether to add coastlines, land features, and zoom to the data extent
+    - cmap: colormap to use (RdBu_r is good for diverging velocities where 0 is white)
+    - vmin, vmax: limits for the colorbar (optional)
+    - corners: Optional bounds for the map extent, handled via _get_extent
 
-    speed : 2D array
-        Current speed in m/s. NaNs (land) are left blank under the land mask.
-
-    corners : tuple or list, optional
-        Map extent, in any form accepted by ``plot_velocity_quiver``.
-        Defaults to the full model domain.
-
-    cmap : str, default "viridis"
-        Sequential colormap. "cmo.speed" works if ``cmocean`` is imported.
-
-    vmax : float, optional
-        Top of the colour scale. Defaults to the 99th percentile of speed so a
-        few extreme cells do not wash out the rest of the map.
-
-    dpi : int, default 300
-        Resolution of the saved PNG. A PDF is also saved alongside it, with the
-        speed field rasterised and the text/coastlines kept as vectors.
-
-    Returns
-    -------
-    fig, ax
-        Matplotlib figure and axis.
+    Returns:
+    - mesh: The QuadMesh object returned by pcolormesh (useful for adding a colorbar later)
     """
-    lon = np.asarray(lon)
-    lat = np.asarray(lat)
-    speed = np.asarray(speed)
 
-    if not (lon.shape == lat.shape == speed.shape):
-        raise ValueError("lon, lat and speed must all have the same shape.")
+    if corners is None:
+        corners = [40.0, 42.5, -20.0, -17.5]
 
-    if vmax is None:
-        vmax = float(np.nanpercentile(speed, 99))
+    grid = np.load(grid_coords_path)
+    lat = grid["rho_lat"]
+    lon = grid["rho_lon"]
 
-    extent = _get_extent(lon, lat, corners=corners, padding=0)
-    projection = ccrs.PlateCarree()
-    land_colour = "#d9d9d9"
+    # Resolution matching
+    nlat, nlon = vel.shape
+    base_lat, base_lon = lon.shape
 
-    with plt.rc_context({"font.size": font_size}):
-        fig = plt.figure(figsize=figsize)
-        ax = cast(GeoAxes, plt.axes(projection=projection))
-        ax.set_extent(extent, crs=projection)
-        # Model land cells (NaN) that Natural Earth misses should still read as land.
-        ax.set_facecolor(land_colour)
+    res_lat = base_lat // nlat
+    res_lon = base_lon // nlon
 
-        mesh = ax.pcolormesh(
+    lon = _block_average_2d(lon, res_lat, res_lon)
+    lat = _block_average_2d(lat, res_lat, res_lon)
+
+    # Calculate extent using the corners argument or data bounds
+    extent = _get_extent(lon.ravel(), lat.ravel(), corners=corners)
+
+    if add_map_features:
+        # Cast to GeoAxes so Pylance knows Cartopy methods are available
+        geo_ax = cast(GeoAxes, ax)
+
+        # Add geographical features
+        geo_ax.add_feature(cfeature.COASTLINE, linewidth=0.8, zorder=2)
+
+        # Zoom to the calculated extent based on corners/data
+        if extent is not None:
+            geo_ax.set_extent(extent, crs=ccrs.PlateCarree())
+
+        # Plot the data using PlateCarree projection so Cartopy knows how to map it
+        mesh = geo_ax.pcolormesh(
             lon,
             lat,
-            np.ma.masked_invalid(speed),
-            transform=projection,
+            vel,
+            transform=ccrs.PlateCarree(),
             cmap=cmap,
-            vmin=0,
+            shading="auto",
+            zorder=1,
+            vmin=vmin,
             vmax=vmax,
-            shading="nearest",
-            rasterized=True,
         )
 
-        ax.add_feature(cfeature.LAND.with_scale("10m"), facecolor=land_colour, zorder=2)
-        ax.coastlines(resolution="10m", linewidth=0.6, color="#404040", zorder=3)
-
-        gridlines = ax.gridlines(
-            draw_labels=True, linewidth=0.4, color="white", alpha=0.4, linestyle="--"
+        # Optional: Add gridlines
+        gl = geo_ax.gridlines(
+            draw_labels=True, linewidth=0.5, color="gray", alpha=0.5, linestyle="--"
         )
-        gridlines.top_labels = False
-        gridlines.right_labels = False
+        gl.top_labels = False
+        gl.right_labels = False
+    else:
+        # Standard matplotlib plot without Cartopy mapping
+        mesh = ax.pcolormesh(lon, lat, vel, cmap=cmap, shading="auto", vmin=vmin, vmax=vmax)
 
-        colorbar = fig.colorbar(
-            mesh, ax=ax, orientation="horizontal", pad=0.06, shrink=0.8, extend="max"
+        # Apply the extent to standard x/y limits: [lon_min, lon_max, lat_min, lat_max]
+        if extent is not None:
+            ax.set_xlim(extent[0], extent[1])
+            ax.set_ylim(extent[2], extent[3])
+
+    return mesh
+
+
+def _normalize_trajectories(
+    data: NDArray[np.floating] | Sequence[NDArray[np.floating]] | None,
+) -> list[NDArray[np.floating]]:
+    """Helper to safely convert varying inputs into a strict list of 1D arrays."""
+    if data is None:
+        return []
+    if isinstance(data, np.ndarray):
+        return list(data) if data.ndim == 2 else [data]
+    return list(data)
+
+
+def _style_map_axis(ax: GeoAxes, extent: Sequence[float] | None = None) -> None:
+    """
+    Applies standard Cartopy geographic styling and bounds to an axis.
+    """
+    if extent is not None:
+        ax.set_extent(extent, crs=ccrs.PlateCarree())
+
+    ax.add_feature(cfeature.LAND, facecolor="lightgray", zorder=2)
+    ax.add_feature(cfeature.COASTLINE, linewidth=0.5, zorder=2)
+
+    gl = ax.gridlines(draw_labels=True, linestyle="--", alpha=0.5)
+    gl.top_labels = False
+    gl.right_labels = False
+
+
+def _plot_single_panel(
+    ax: GeoAxes, title: str, track_lons: Sequence[np.ndarray], track_lats: Sequence[np.ndarray]
+):
+    """
+    Plots the background velocity field and overlays particle trajectories.
+    """
+    ax.set_title(title)
+
+    # Plot trajectories
+    for i, (lons, lats) in enumerate(zip(track_lons, track_lats, strict=False)):
+        ax.plot(
+            lons,
+            lats,
+            transform=ccrs.PlateCarree(),
+            color="black",
+            linewidth=2,
+            label="Track" if i == 0 else None,
+            zorder=3,
         )
-        colorbar.set_label("Surface current speed (m s$^{-1}$)")
-        colorbar.outline.set_visible(False)
+        # Start marker
+        ax.scatter(
+            lons[0], lats[0], color="green", marker="o", transform=ccrs.PlateCarree(), zorder=4
+        )
+        # End marker
+        ax.scatter(
+            lons[-1], lats[-1], color="red", marker="X", transform=ccrs.PlateCarree(), zorder=4
+        )
 
-        if title is not None:
-            ax.set_title(title, fontweight="bold")
+    legend_elements = [
+        Line2D([0], [0], color="b", lw=4, label="Track"),
+        Line2D([0], [0], marker="o", color="green", label="Start"),
+        Line2D([0], [0], marker="X", color="red", label="End"),
+    ]
 
-        if output_path is not None:
-            output_path = Path(output_path)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
-            fig.savefig(output_path.with_suffix(".pdf"), dpi=dpi, bbox_inches="tight")
+    ax.legend(handles=legend_elements, loc="upper right")
 
-    return fig, ax
+
+# Define a literal type for static type checking safety
+FieldType = Literal["truth", "predicted", "degraded"]
+
+
+def plot_multi_experiment_trajectories(
+    exp_config: ExperimentConfig,
+    exp_names: Sequence[ExperimentPathType] | None = None,
+    folder_name: str | Path = "comparison",
+    padding: float = 2.0,
+) -> None:
+    """
+    Dynamically plots side-by-side trajectory panels for ground truth and all specified experiments.
+    """
+    # 1. Resolve experiment names
+    if exp_names is None:
+        exp_names = get_args(ExperimentPathType)
+
+    if not exp_names:
+        raise ValueError("No experiments provided to plot.")
+
+    all_lons_combined: list[NDArray] = []
+    all_lats_combined: list[NDArray] = []
+    processed_panels_data = []
+
+    # 2. Extract Ground Truth
+    # Assuming ground truth is identical across experiments, we pull it from the first one.
+    truth_traj_path = Path(exp_config.base) / exp_names[0] / "metrics" / "trajectories_truth.zarr"
+
+    if not truth_traj_path.exists():
+        raise FileNotFoundError(f"Could not find Ground Truth trajectories at {truth_traj_path}")
+
+    truth_trajectories = extract_trajectories(truth_traj_path)
+    t_lons = _normalize_trajectories(truth_trajectories[0])
+    t_lats = _normalize_trajectories(truth_trajectories[1])
+
+    all_lons_combined.extend(t_lons)
+    all_lats_combined.extend(t_lats)
+
+    processed_panels_data.append({"title": "Ground Truth", "lons": t_lons, "lats": t_lats})
+
+    # 3. Iterate over experiments and extract ML predictions dynamically
+    for name in exp_names:
+        exp_traj_path = Path(exp_config.base) / name / "metrics" / "trajectories_ml_predicted.zarr"
+
+        if not exp_traj_path.exists():
+            raise FileNotFoundError(f"Could not find predicted trajectories at {exp_traj_path}")
+
+        trajectories = extract_trajectories(exp_traj_path)
+        _lons = _normalize_trajectories(trajectories[0])
+        _lats = _normalize_trajectories(trajectories[1])
+
+        all_lons_combined.extend(_lons)
+        all_lats_combined.extend(_lats)
+
+        processed_panels_data.append({"title": f"Predicted: {name}", "lons": _lons, "lats": _lats})
+
+    # 4. Global map bounds calculation
+    extent = _get_extent(
+        np.concatenate(all_lons_combined), np.concatenate(all_lats_combined), padding=padding
+    )
+
+    # 5. Dynamic Subplot Setup
+    num_panels = len(processed_panels_data)
+    fig, axes_raw = plt.subplots(
+        1, num_panels, figsize=(8 * num_panels, 8), subplot_kw={"projection": ccrs.PlateCarree()}
+    )
+
+    # Clean array-vs-scalar unpacking for Pyright type checker safety
+    axes = [cast(GeoAxes, axes_raw)] if num_panels == 1 else [cast(GeoAxes, ax) for ax in axes_raw]
+
+    # 6. Step through layout allocations and populate panels
+    for i, panel in enumerate(processed_panels_data):
+        ax = axes[i]
+        _style_map_axis(ax, extent)
+        _plot_single_panel(
+            ax=ax, title=panel["title"], track_lons=panel["lons"], track_lats=panel["lats"]
+        )
+
+    # 7. Save out image
+    output_dir = Path("images") / str(folder_name)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    save_path = output_dir / "multi_experiment_trajectories.png"
+    plt.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    print(f"Dynamic trajectory plot saved to {save_path}")
+
+
+def plot_combined_experiment_trajectories(
+    exp_config: ExperimentConfig,
+    exp_names: Sequence[ExperimentPathType] | None = None,
+    folder_name: str | Path = "comparison",
+    padding: float = 2.0,
+) -> None:
+    """
+    Plots the ground truth and ML predicted trajectories for all specified
+    experiments overlaid on a single map.
+    """
+    # 1. Resolve experiment names
+    if exp_names is None:
+        exp_names = get_args(ExperimentPathType)
+
+    if not exp_names:
+        raise ValueError("No experiments provided to plot.")
+
+    all_lons_combined: list[NDArray] = []
+    all_lats_combined: list[NDArray] = []
+
+    # Store trajectory data to plot later: {"label": str, "lons": NDArray, "lats": NDArray}
+    trajectories_to_plot = []
+
+    # 2. Extract Ground Truth (from the first experiment)
+    truth_traj_path = Path(exp_config.base) / exp_names[0] / "metrics" / "trajectories_truth.zarr"
+
+    if not truth_traj_path.exists():
+        raise FileNotFoundError(f"Could not find Ground Truth trajectories at {truth_traj_path}")
+
+    truth_trajectories = extract_trajectories(truth_traj_path)
+    t_lons = _normalize_trajectories(truth_trajectories[0])
+    t_lats = _normalize_trajectories(truth_trajectories[1])
+
+    all_lons_combined.extend(t_lons)
+    all_lats_combined.extend(t_lats)
+
+    trajectories_to_plot.append(
+        {"label": "Ground Truth", "lons": t_lons, "lats": t_lats, "is_truth": True}
+    )
+
+    # 3. Iterate over experiments and extract ML predictions
+    for name in exp_names:
+        exp_traj_path = Path(exp_config.base) / name / "metrics" / "trajectories_ml_predicted.zarr"
+
+        if not exp_traj_path.exists():
+            raise FileNotFoundError(f"Could not find predicted trajectories at {exp_traj_path}")
+
+        trajectories = extract_trajectories(exp_traj_path)
+        _lons = _normalize_trajectories(trajectories[0])
+        _lats = _normalize_trajectories(trajectories[1])
+
+        all_lons_combined.extend(_lons)
+        all_lats_combined.extend(_lats)
+
+        trajectories_to_plot.append(
+            {"label": f"Predicted: {name}", "lons": _lons, "lats": _lats, "is_truth": False}
+        )
+
+    # 4. Global map bounds calculation
+    extent = _get_extent(
+        np.concatenate(all_lons_combined), np.concatenate(all_lats_combined), padding=padding
+    )
+
+    # 5. Single Map Setup
+    fig, ax = plt.subplots(1, 1, figsize=(12, 10), subplot_kw={"projection": ccrs.PlateCarree()})
+    ax = cast(GeoAxes, ax)
+
+    _style_map_axis(ax, extent)
+    ax.set_title("Combined Trajectories Comparison", fontsize=14, pad=15)
+
+    # 6. Plot all collected trajectories onto the single axis
+    for item in trajectories_to_plot:
+        track_lons = item["lons"]
+        track_lats = item["lats"]
+        label = item["label"]
+
+        # Styling: Make ground truth stand out (e.g., thicker black line)
+        if item["is_truth"]:
+            color = "black"
+            linewidth = 2.5
+            zorder = 5  # Ensure truth is drawn on top
+            alpha = 1.0
+            style = "dashed"
+        else:
+            color = None  # Let matplotlib cycle through default colors
+            linewidth = 1.5
+            zorder = 4
+            alpha = 0.8
+            style = "solid"
+
+        # Iterate through the list of arrays just like in _plot_single_panel
+        for i, (lons, lats) in enumerate(zip(track_lons, track_lats, strict=False)):
+            ax.plot(
+                lons,
+                lats,
+                label=label if i == 0 else None,  # Only add label once per experiment
+                color=color,
+                linestyle=style,
+                linewidth=linewidth,
+                alpha=alpha,
+                zorder=zorder,
+                transform=ccrs.PlateCarree(),
+            )
+            # Start marker
+            ax.scatter(
+                lons[0],
+                lats[0],
+                color="green",
+                marker="o",
+                transform=ccrs.PlateCarree(),
+                zorder=zorder + 1,
+            )
+            # End marker
+            ax.scatter(
+                lons[-1],
+                lats[-1],
+                color="red",
+                marker="X",
+                transform=ccrs.PlateCarree(),
+                zorder=zorder + 1,
+            )
+
+    # Add legend outside the plot to avoid covering trajectories
+    ax.legend(loc="center left", bbox_to_anchor=(1.05, 0.5), frameon=False, title="Experiments")
+    # 7. Save out image
+    output_dir = Path("images") / str(folder_name)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    save_path = output_dir / "combined_experiment_trajectories.png"
+    plt.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    print(f"Combined trajectory plot saved to {save_path}")
+
+
+def plot_multi_experiment_speed_heatmaps(
+    data_config: DataConfig,
+    exp_config: ExperimentConfig,
+    exp_names: Sequence[ExperimentPathType] | None = None,
+    folder_name: str | Path = "comparison",
+    time_idx: int = 0,
+    corners: Any = None,
+    padding: float = 2.0,
+) -> None:
+    """
+    Dynamically plots speed heatmaps for Ground Truth and multiple experiments.
+    Automatically calculates an optimal grid layout to scale nicely with the number of experiments.
+    """
+    # 1. Resolve experiment names
+    if exp_names is None:
+        exp_names = get_args(ExperimentPathType)
+
+    if not exp_names:
+        raise ValueError("No experiments provided to plot.")
+
+    # Get datetime corresponding to time_idx from the ground truth dataset
+    times = xr.open_zarr(exp_config.model_predictions).time_counter.values
+    datetime_str = times[time_idx]
+
+    # 2. Load base coordinates and extract spatial slices
+    x_slice, y_slice = _get_valid_spatial_slices(data_config)
+    base_lons = np.load(data_config.grid_params)["rho_lon"][y_slice, x_slice]
+    base_lats = np.load(data_config.grid_params)["rho_lat"][y_slice, x_slice]
+
+    all_lons_combined: list[np.ndarray] = []
+    all_lats_combined: list[np.ndarray] = []
+    processed_panels_data = []
+
+    global_vmin = float("inf")
+    global_vmax = float("-inf")
+
+    # Helper function to process datasets
+    def process_dataset(ds_path: Path | str, title: str, needs_slice: bool):
+        nonlocal global_vmin, global_vmax
+
+        ds = xr.open_zarr(ds_path)
+        if needs_slice:
+            ds = ds.isel(x=x_slice, y=y_slice)
+
+        # Isolate the specific time step for the heatmap
+        ds = ds.sel({"time_counter": datetime_str})
+
+        # Extract U and V to calculate scalar speed
+        u = ds["velocity"].isel(component=0)
+        v = ds["velocity"].isel(component=1)
+        speed = ((u**2 + v**2) ** 0.5).values
+
+        all_lons_combined.append(base_lons.flatten())
+        all_lats_combined.append(base_lats.flatten())
+
+        # Track global min/max for a shared colorbar
+        global_vmin = min(global_vmin, np.nanmin(speed))
+        global_vmax = max(global_vmax, np.nanmax(speed))
+
+        processed_panels_data.append(
+            {"title": title, "lons": base_lons, "lats": base_lats, "speed": speed}
+        )
+
+    # 3. Process Ground Truth
+    process_dataset(ds_path=data_config.original_res, title="Ground Truth", needs_slice=True)
+
+    # 4. Process all requested ML Experiments
+    # We infer the prediction filename from the exp_config to ensure we load the correct file
+    pred_filename = Path(exp_config.model_predictions).name
+
+    for name in exp_names:
+        exp_pred_path = Path(exp_config.base) / name / pred_filename
+
+        if not exp_pred_path.exists():
+            raise FileNotFoundError(f"Could not find predicted dataset at {exp_pred_path}")
+
+        process_dataset(ds_path=exp_pred_path, title=f"Predicted: {name}", needs_slice=False)
+
+    # 5. Global map bounds calculation
+    extent = _get_extent(
+        np.concatenate(all_lons_combined),
+        np.concatenate(all_lats_combined),
+        padding=padding,
+        corners=corners,
+    )
+
+    # 6. Dynamic Subplot Setup (Scales beautifully with panel count)
+    num_panels = len(processed_panels_data)
+
+    if num_panels == 1:
+        nrows, ncols = 1, 1
+    elif num_panels == 2:
+        nrows, ncols = 1, 2
+    elif num_panels == 3:
+        nrows, ncols = 1, 3
+    elif num_panels == 4:
+        nrows, ncols = 2, 2
+    else:
+        # Generic fallback for larger numbers (e.g., 5 panels -> 2x3, 7 panels -> 3x3)
+        ncols = math.ceil(math.sqrt(num_panels))
+        nrows = math.ceil(num_panels / ncols)
+
+    fig, axes_raw = plt.subplots(
+        nrows, ncols, figsize=(8 * ncols, 8 * nrows), subplot_kw={"projection": ccrs.PlateCarree()}
+    )
+
+    # Flatten safely for unified iteration
+    axes_flat = np.atleast_1d(axes_raw).flatten()
+
+    # 7. Step through layout allocations and populate panels
+    mesh = None
+    for i, ax_raw in enumerate(axes_flat):
+        ax = cast(GeoAxes, ax_raw)
+
+        # Turn off axes that don't have data
+        if i >= num_panels:
+            ax.axis("off")
+            continue
+
+        panel = processed_panels_data[i]
+        _style_map_axis(ax, extent)
+        ax.set_title(panel["title"], fontsize=14, pad=10)
+
+        # Plot the heatmap
+        mesh = ax.pcolormesh(
+            panel["lons"],
+            panel["lats"],
+            panel["speed"],
+            transform=ccrs.PlateCarree(),
+            cmap="viridis",
+            vmin=global_vmin,
+            vmax=global_vmax,
+            shading="auto",
+        )
+
+    # Add a shared colorbar across all subplots
+    if mesh is not None:
+        cbar = fig.colorbar(
+            mesh, ax=axes_flat, orientation="horizontal", shrink=0.5, pad=0.08, aspect=40
+        )
+        cbar.set_label("Speed", fontsize=12)
+
+    # 8. Save out image
+    output_dir = Path("images") / "comparison"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    prefix = "zoomed_" if corners is not None else ""
+    save_path = output_dir / f"{prefix}multi_exp_speed_heatmap_t{time_idx}.png"
+
+    plt.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    print(f"Dynamic speed heatmap saved to {save_path}")
+
+def _plot_multi_experiment(
+    data: dict,
+    x_values: np.ndarray,
+    metric_name: MetricType,
+    folder_name: str | Path,
+):
+    # Initialize the plot with the same sizing as the reference
+    plt.figure(figsize=(10, 6))
+
+    # Iterate through the dictionary to plot each experiment
+    for label, values in data.items():
+        plt.plot(x_values[:400], values[:400], label=label, linewidth=2.5)
+
+    # Apply standard styling, titles, and labels
+    if metric_name == "euler_distance":
+        plt.title("Lagrangian Separation Distance from Ground Truth")
+        plt.xlabel("Advection Time (Hours)")
+        plt.ylabel("Mean Separation Distance (km)")
+
+    elif metric_name == "ftle":
+        plt.title("FTLE from Ground Truth")
+        plt.xlabel("Advection Time (Hours)")
+        plt.ylabel("FTLE (days$^{-1}$)")
+
+    elif metric_name == "velocity_mse":
+        plt.title("MSE in speeds from Ground Truth")
+        plt.xlabel("Advection Time (Hours)")
+        plt.ylabel("Mean Square Error ($ms^{-1}$)")
+
+    elif metric_name == "velocity_nmse":
+        plt.title("Normalised MSE in speeds from Ground Truth")
+        plt.xlabel("Advection Time (Hours)")
+        plt.ylabel("Normalised Mean Square Error")
+
+    plt.legend()
+    plt.grid(True, linestyle=":", alpha=0.7)
+
+    # Handle directory creation and saving the figure
+    Path(f"images/{folder_name}").mkdir(parents=True, exist_ok=True)
+    plot_path = Path(f"/home/users/sbarnett/documents/driftnet/images/{folder_name}/{metric_name}.png")
+    os.makedirs(plot_path.parent, exist_ok=True)
+    plt.savefig(plot_path, bbox_inches="tight", dpi=300)
+    print(f"Metrics plot successfully saved to {plot_path}")
+
+    # Close the plot to free up memory
+    plt.close()
+
+
+def _plot_kinetic_energy_spectrum(
+    data: dict,
+    x_values: np.ndarray,
+    metric_name: MetricType,
+    folder_name: str | Path,
+):
+
+    # x_values represents wavenumbers here. Ignore k=0 to prevent log(0) errors.
+    valid = x_values > 0
+    k = x_values[valid]
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    # Iterate through the dictionary to plot each experiment and the Ground Truth
+    for label, values in data.items():
+        vals = np.array(values)[valid]
+        if label == "Ground Truth":
+            ax.loglog(k, vals, label=label, color="black", linewidth=2.5)
+        else:
+            ax.loglog(k, vals, label=label, linestyle="--", linewidth=1.5)
+
+    ax.set_title("Kinetic Energy Spectrum", fontsize=14, pad=15)
+    ax.set_xlabel("Wavenumber, $k$ (cycles / m)", fontsize=12)
+    ax.set_ylabel("Kinetic Energy Density", fontsize=12)
+    ax.grid(True, which="both", linestyle=":", alpha=0.6)
+
+    # Place legend outside so it doesn't cover the spectrum lines
+    ax.legend(fontsize=10, bbox_to_anchor=(1.05, 1), loc='upper left')
+
+    # --- Add a secondary top axis for Wavelength in km ---
+    def k_to_km(k_val):
+        k_val = np.asarray(k_val, dtype=float)
+        with np.errstate(divide='ignore'):
+            return np.where(k_val == 0, np.inf, 1.0 / (k_val * 1000.0))
+
+    def km_to_k(km_val):
+        km_val = np.asarray(km_val, dtype=float)
+        with np.errstate(divide='ignore'):
+            return np.where(km_val == 0, np.inf, 1.0 / (km_val * 1000.0))
+
+    secax = ax.secondary_xaxis('top', functions=(k_to_km, km_to_k))
+    secax.set_xlabel("Wavelength (km)", fontsize=12)
+    secax.set_xticks([10, 50, 100, 500])
+    secax.xaxis.set_major_formatter(ScalarFormatter())
+
+    # Handle directory creation and saving the figure
+    plot_path = Path(f"/home/users/sbarnett/documents/driftnet/images/{folder_name}/{metric_name}.png")
+    os.makedirs(plot_path.parent, exist_ok=True)
+    plt.savefig(plot_path, bbox_inches="tight", dpi=300)
+    print(f"Metrics plot successfully saved to {plot_path}")
+    plt.close()
+
+
+def _plot_distance_distribution(
+    data: dict,
+    x_values: np.ndarray,
+    metric_name: MetricType,
+    folder_name: str | Path,
+):
+    import matplotlib.pyplot as plt
+    from scipy.stats import gaussian_kde
+
+    os.makedirs(folder_name, exist_ok=True)
+
+    # Extract the column names (the time indices we saved)
+    sample_df = next(iter(data.values()))
+    time_cols = sample_df.columns
+
+    # Create a subplot for each evaluated time step
+    num_times = len(time_cols)
+    fig, axes = plt.subplots(1, num_times, figsize=(6 * num_times, 5), sharey=False)
+    max_ys = []
+    if num_times == 1:
+        axes = [axes]
+
+    for idx, col in enumerate(time_cols):
+        ax = axes[idx]
+        t_idx = col.split("_")[-1]  # Extracts the '72' from 'dist_t_72'
+
+        # Find global max distance across all experiments to set a common x-axis
+        max_val = 0
+        for df in data.values():
+            # Get values and explicitly drop both nulls and NaNs!
+            vals = df[col].drop_nulls().to_numpy()
+            vals = vals[~np.isnan(vals)]
+
+            if len(vals) > 0:
+                max_val = max(max_val, np.max(vals))
+
+        if max_val == 0 or np.isnan(max_val):
+            continue
+
+        x_grid = np.linspace(0, max_val, 200)
+
+        for label, df in data.items():
+            # Extract and clean values for the KDE
+            vals = df[col].drop_nulls().to_numpy()
+            vals = vals[~np.isnan(vals)]
+
+            if len(vals) < 2:
+                continue
+
+            # Skip if variance is 0 (e.g., t=0 where particles haven't moved yet)
+            if np.var(vals) == 0:
+                continue
+
+            # Compute a smooth, normal-ish distribution curve
+            kde = gaussian_kde(vals)
+            ax.plot(x_grid, kde(x_grid), linewidth=2.5, label=label)
+            ax.fill_between(x_grid, kde(x_grid), alpha=0.1) # Shaded area under curve
+            max_ys.append(max(kde(x_grid)))
+
+        ax.set_title(f"Separation Variance (t={t_idx} hours)", fontsize=14)
+        ax.set_xlabel("Separation Distance (km)", fontsize=12)
+        if idx == 0:
+            ax.set_ylabel("Density / Probability", fontsize=12)
+        ax.grid(True, linestyle=":", alpha=0.6)
+
+        if idx == num_times - 1:
+            ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+
+    for ax in axes:
+        ax.set_ylim(0, max(max_ys) * 1.2)
+
+    plt.tight_layout()
+    plot_path = Path(f"/home/users/sbarnett/documents/driftnet/images/{folder_name}/{metric_name}.png")
+    os.makedirs(plot_path.parent, exist_ok=True)
+    plt.savefig(plot_path, bbox_inches="tight", dpi=300)
+    print(f"Metrics plot successfully saved to {plot_path}")
+    plt.close()
+
+
+def plot_several_experiments(
+    exp_config: ExperimentConfig,
+    metrics_to_plot: Sequence[MetricType] | None = None,
+    exp_names: Sequence[ExperimentPathType] | None = None,
+):
+    if exp_names is None:
+        exp_names = get_args(ExperimentPathType)
+
+    if metrics_to_plot is None:
+        metrics_to_plot = get_args(MetricType)
+
+    metric_registry = {
+        "euler_distance": {
+            "csv_name": "distance.csv",
+            "heading": "Mean_ML_Error",
+            "x_col": "time",
+            "plot_fn": _plot_multi_experiment
+        },
+        "ftle": {
+            "csv_name": "ftle.csv",
+            "heading": "ML_Lyapunov_Exponent",
+            "x_col": "time",
+            "plot_fn": _plot_multi_experiment
+        },
+        "velocity_mse": {
+            "csv_name": "velocity_mse.csv",
+            "heading": "MSE_speed_ML",
+            "x_col": "time",
+            "plot_fn": _plot_multi_experiment
+        },
+        "kinetic_energy_spectrum": {
+            "csv_name": "spectrum.csv",
+            "heading": "KE_pred",
+            "truth_heading": "KE_truth",  # Special column reserved for the ground truth
+            "x_col": "wavenumber",        # Changes how x_values are parsed
+            "plot_fn": _plot_kinetic_energy_spectrum
+        },
+        "velocity_nmse": {
+            "csv_name": "velocity_mse.csv",
+            "heading": "NMSE_speed_ML",  # Points to our new Normalized column
+            "x_col": "time",
+            "plot_fn": _plot_multi_experiment
+        },
+        "distance_distribution": {
+            "csv_name": "distance_distribution.csv",
+            "heading": "ALL",
+            "x_col": None,
+            "plot_fn": _plot_distance_distribution
+        }
+    }
+
+    for metric in metrics_to_plot:
+        if metric not in metric_registry:
+            raise KeyError(f"metric {metric} not recognised - add to metric_registry")
+
+        cfg = metric_registry[metric]
+
+        data = {}
+        x_values = np.array([])
+
+        for i, name in enumerate(exp_names):
+            file_path = Path(exp_config.base) / name / "metrics" / cfg["csv_name"]
+
+            if not file_path.exists():
+                raise FileNotFoundError(f"Could not find results at {file_path}")
+
+            df = pl.read_csv(file_path)
+
+            if i == 0:  # Calculate the x-axis values once
+                if cfg.get("x_col") == "time":
+                    df_time = df.with_columns(pl.col("time").str.to_datetime(strict=False))
+                    x_values = ((df_time["time"] - df_time["time"][0]).dt.total_minutes() / 60.0).to_numpy()
+                elif cfg.get("x_col") is not None:
+                    x_values = df[cfg["x_col"]].to_numpy()
+                else:
+                    x_values = np.array([])  # Fallback for metrics that don't use x_values
+
+                # If the metric includes a ground truth column in the CSV, add it!
+                if "truth_heading" in cfg and cfg["truth_heading"] in df.columns:
+                    data["Ground Truth"] = df[cfg["truth_heading"]].to_numpy()
+
+            if cfg.get("heading") == "ALL":
+                data[name] = df
+            else:
+                data[name] = df[cfg["heading"]].to_numpy()
+
+        # Dispatch to the specific plotting function defined in the registry
+        plot_fn = cfg.get("plot_fn", _plot_multi_experiment)
+        plot_fn(data, x_values, metric, Path("comparison"))

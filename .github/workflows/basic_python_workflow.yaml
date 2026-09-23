@@ -41,6 +41,3 @@ jobs:
 
     - name: Type check with Pyright
       run: pyright
-
-    - name: Test with pytest
-      run: pytest

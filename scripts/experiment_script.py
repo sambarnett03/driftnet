@@ -1,17 +1,14 @@
 import argparse
-import warnings
 from pathlib import Path
+from collections.abc import Sequence
 
-import numpy as np
-import xarray as xr
-import yaml
+from generate_types import generate_experiment_types
+from metrics.diagnostics import save_metrics, plot_metrics
 
-from driftnet.data import degrade_zarr_store, preprocess_folder
-from driftnet.plotting import plot_velocity_quiver
-
-# --- Suppress Zarr V3 experimental warnings ---
-warnings.filterwarnings("ignore", message=".*FixedLengthUTF32.*")
-warnings.filterwarnings("ignore", message=".*Consolidated metadata is currently not part.*")
+from driftnet.config import MasterConfig
+from driftnet.utils import print_and_save_config
+from driftnet.metrics.lagrange import compute_trajectories
+from driftnet.generated_types import ExperimentPathType, MetricType
 
 
 def main():
@@ -24,54 +21,29 @@ def main():
     )
     args = parser.parse_args()
 
-    # Load the configuration file
-    with open(args.config) as f:
-        config = yaml.safe_load(f)
+    # Load the configuration (automatically creates experiment folders)
+    config = MasterConfig.load_from_yaml(args.config)
 
-    nc_dir = Path(config["data"]["nc_directory"])
-    coord_data = np.load(config["data"]["grid_params"])
+    # Make any edits to the config and save
+    print_and_save_config(config)
 
-    # We now target .zarr datasets instead of empty directories
-    original_res_zarr = Path(config["data"]["original_res_images"]) / "mock.zarr"
-    degraded_zarr = Path(config["data"]["degraded_images"]) / "mock.zarr"
+    # Update the type hinting for experiments
+    generate_experiment_types()
 
-    # 1. Take all raw NetCDFs and pack them into a High-Res Zarr store
-    preprocess_folder(nc_dir, original_res_zarr)
+    # Code to run
+    exp_names : Sequence[ExperimentPathType]
+    exp_names = ['default_experiment/baseline_trial',
+                 'pixelshuffle/baseline_trial',
+                 'batchnorm/baseline_trial',
+                 'interpolate/baseline_trial']
 
-    # 2. Plot the high resolution map
-    ds = xr.open_dataset("/gws/nopw/j04/oxford_es/sbarnett/driftnet/images/original_res/mock.zarr")
-    ds_filtered = ds.isel(time_counter=0)
-    vels = ds_filtered.velocity.values
+    metric_names: Sequence[MetricType]
+    # metric_names = ['euler_distance', 'kinetic_energy_spectrum', 'distance_distribution']
+    metric_names = ['distance_distribution']
 
-    plot_velocity_quiver(
-        coord_data=coord_data,
-        u_input=vels[0],
-        v_input=vels[1],
-        stride=1,
-        gridline_interval=0.02,
-        corners=[35, 35.1, -20, -19.9],
-        title="u and v velocity component",
-        output_path="images/original_image.png",
-    )
-
-    # 3. Open the High-Res Zarr store, degrade it, and save it to a Low-Res Zarr store
-    degrade_zarr_store(original_res_zarr, 2, degraded_zarr)
-
-    # 4. Check degraded velocity maps
-    ds = xr.open_dataset("/gws/nopw/j04/oxford_es/sbarnett/driftnet/images/degraded/mock_n2.zarr")
-    ds_filtered = ds.isel(time_counter=0)
-    vels = ds_filtered.velocity.values
-
-    plot_velocity_quiver(
-        coord_data=coord_data,
-        u_input=vels[0],
-        v_input=vels[1],
-        stride=1,
-        gridline_interval=0.02,
-        corners=[35, 35.1, -20, -19.9],
-        title="u and v velocity component",
-        output_path="images/degraded_image.png",
-    )
+    # compute_trajectories(config.data, config.experiment, exp_names)
+    # save_metrics(config.data, config.experiment, exp_names, metric_names)
+    plot_metrics(config.data, config.experiment, exp_names, metric_names)
 
 
 if __name__ == "__main__":

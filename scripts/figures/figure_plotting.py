@@ -190,7 +190,8 @@ def _plot_distance_distribution(
     time_cols = [c for c in sample_df.columns if c.startswith("dist_t_")]
 
     num_times = len(time_cols)
-    fig, axes = plt.subplots(1, num_times, figsize=(6 * num_times, 5), sharey=False)
+    # One panel per time, stacked vertically; each keeps its own x and y range.
+    fig, axes = plt.subplots(num_times, 1, figsize=(8, 3.6 * num_times), sharey=False)
     if num_times == 1:
         axes = [axes]
 
@@ -242,9 +243,9 @@ def _plot_distance_distribution(
             color_idx += 1
 
         ax.set_title(f"Separation Variance (t={t_idx} hours)", fontsize=14, fontweight="bold")
-        ax.set_xlabel("Separation Distance (km)", fontsize=13)
-        if idx == 0:
-            ax.set_ylabel("Density / Probability", fontsize=13)
+        if idx == num_times - 1:
+            ax.set_xlabel("Separation Distance (km)", fontsize=13)
+        ax.set_ylabel("Density / Probability", fontsize=13)
 
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
@@ -255,8 +256,9 @@ def _plot_distance_distribution(
         if local_max_y > 0:
             ax.set_ylim(0, local_max_y * 1.15)
 
-        if idx == num_times - 1:
-            ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", frameon=False, fontsize=11)
+        # The distributions sit to the left, so the top panel's upper right is free.
+        if idx == 0:
+            ax.legend(loc="upper right", frameon=False, fontsize=11)
 
     plot_path = Path(f"/home/users/sbarnett/documents/driftnet/images/{folder_name}/{metric_name}.png")
     plt.tight_layout()

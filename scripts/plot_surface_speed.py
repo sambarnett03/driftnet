@@ -83,6 +83,7 @@ def main():
         vmax=args.vmax,
         inset=not args.no_inset,
         output_path=args.output,
+        inset_bounds=(0.65, 0.05, 0.4, 0.4)
     )
     print(f"Saved {args.output} and {Path(args.output).with_suffix('.pdf')}")
 

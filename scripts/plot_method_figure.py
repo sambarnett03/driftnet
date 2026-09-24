@@ -1,5 +1,5 @@
 """
-Plot a vertical poster figure of the downscaling method, using real fields from one
+Plot a figure of the downscaling method, using real fields from one
 test-set time step: truth -> degraded input, which feeds a U-Net and a diffusion model
 side by side, each with its own output. The training losses are marked.
 
@@ -17,6 +17,11 @@ Choose the time step and zoom box yourself (lon_min lon_max lat_min lat_max):
 
     python scripts/plot_method_figure.py --diffusion-experiment diffusion/baseline_trial
         --time-index 100 --corners 40 43 -25 -22
+
+Horizontal version for slides, with the diffusion sampler details:
+
+    python scripts/plot_method_figure.py --diffusion-experiment diffusioncfg/ensemble_member_0
+        --layout horizontal --diffusion-steps 20 --ensemble-size 10
 """
 
 import argparse
@@ -80,7 +85,25 @@ def main():
     parser.add_argument(
         "--cmap", type=str, default="viridis", help="Matplotlib or cmocean (cmo.*) colormap"
     )
-    parser.add_argument("--output", type=str, default="images/method_figure.png")
+    parser.add_argument(
+        "--layout",
+        choices=["vertical", "horizontal"],
+        default="vertical",
+        help="vertical (top to bottom, posters) or horizontal (left to right, slides)",
+    )
+    parser.add_argument(
+        "--diffusion-steps", type=int, default=None, help="DDIM sampling steps to label"
+    )
+    parser.add_argument(
+        "--guidance-scale",
+        type=float,
+        default=None,
+        help="Classifier-free guidance weight to label. Defaults to the config's, if set",
+    )
+    parser.add_argument(
+        "--ensemble-size", type=int, default=None, help="Number of ensemble members to label"
+    )
+    parser.add_argument("--output", type=str, default=None, help="Output PNG path")
     args = parser.parse_args()
 
     if args.cmap.startswith("cmo."):
@@ -88,6 +111,10 @@ def main():
 
     config = MasterConfig.load_from_yaml(args.config)
     data, experiment = config.data, config.experiment
+    guidance_scale = args.guidance_scale
+    if guidance_scale is None:
+        guidance_scale = getattr(experiment, "guidance_scale", None)
+    output = args.output or f"images/method_figure_{args.layout}.png"
     factor = data.degrade_factor
 
     predictions_name = Path(experiment.model_predictions).name
@@ -141,11 +168,15 @@ def main():
         diffusion_speed,
         corners=corners,
         factor=factor,
+        layout=args.layout,
+        diffusion_steps=args.diffusion_steps,
+        guidance_scale=guidance_scale,
+        ensemble_size=args.ensemble_size,
         cmap=args.cmap,
         vmax=args.vmax,
-        output_path=args.output,
+        output_path=output,
     )
-    print(f"Saved {args.output} and {Path(args.output).with_suffix('.pdf')}")
+    print(f"Saved {output} and {Path(output).with_suffix('.pdf')}")
 
 
 if __name__ == "__main__":

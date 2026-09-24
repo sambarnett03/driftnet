@@ -1554,9 +1554,17 @@ def _draw_diffusion(
     ink: str,
     muted: str,
     land_colour: str,
+    steps: int | None = None,
+    guidance_scale: float | None = None,
+    ensemble_size: int | None = None,
     seed: int = 0,
 ) -> None:
-    """Draw a generic conditional diffusion model: noise -> denoising steps -> sample."""
+    """
+    Draw a conditional diffusion model: noise -> denoising steps -> sample.
+
+    ``steps``, ``guidance_scale`` and ``ensemble_size`` add the sampler details
+    (DDIM step count, classifier-free guidance weight, number of seeds) when known.
+    """
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.axis("off")
@@ -1577,13 +1585,23 @@ def _draw_diffusion(
     noise = rng.uniform(0, vmax, sample.shape)
     noise[np.isnan(sample)] = np.nan
     tiles = [noise, 0.5 * noise + 0.5 * sample, sample]
-    labels = ["Noise", "Denoise ×T", "Sample"]
+    labels = [
+        "Noise",
+        f"DDIM ×{steps}" if steps else "Denoise ×T",
+        f"Samples ×{ensemble_size}" if ensemble_size else "Sample",
+    ]
     tile_cmap = plt.get_cmap(cmap).with_extremes(bad=land_colour)
 
-    tile_w, tile_h, tile_y = 0.24, 0.42, 0.36
-    tile_xs = [0.06, 0.38, 0.70]
-    for x, tile, label in zip(tile_xs, tiles, labels, strict=True):
-        tile_ax = ax.inset_axes((x, tile_y, tile_w, tile_h))
+    notes = ["conditioned on degraded input"]
+    if guidance_scale is not None:
+        notes.append(f"classifier-free guidance, w = {guidance_scale:g}")
+
+    tile_w, tile_h = 0.24, 0.40
+    tile_y = 0.30 + 0.07 * len(notes)
+    tile_xs = [0.04, 0.35, 0.66]
+
+    def add_tile(x: float, y: float, tile: NDArray[np.floating], zorder: float) -> None:
+        tile_ax = ax.inset_axes((x, y, tile_w, tile_h), zorder=zorder)
         tile_ax.imshow(
             np.ma.masked_invalid(tile),
             origin="lower",
@@ -1597,6 +1615,13 @@ def _draw_diffusion(
         tile_ax.set_yticks([])
         for spine in tile_ax.spines.values():
             spine.set_edgecolor(edge)
+
+    for i, (x, tile, label) in enumerate(zip(tile_xs, tiles, labels, strict=True)):
+        if i == 2 and ensemble_size and ensemble_size > 1:
+            # Stacked tiles behind the sample: one sample per seed.
+            for k in (2, 1):
+                add_tile(x + 0.02 * k, tile_y + 0.03 * k, tile, zorder=3 - k)
+        add_tile(x, tile_y, tile, zorder=3)
         ax.text(
             x + tile_w / 2,
             tile_y - 0.04,
@@ -1615,15 +1640,19 @@ def _draw_diffusion(
             arrowprops={"arrowstyle": "->", "color": ink, "linewidth": 1},
         )
 
-    ax.text(
-        0.5,
-        0.1,
-        "conditioned on degraded input",
-        ha="center",
-        va="center",
-        color=muted,
-        fontsize="x-small",
-    )
+    for i, note in enumerate(notes):
+        ax.text(
+            0.5,
+            0.08 + 0.08 * (len(notes) - 1 - i),
+            note,
+            ha="center",
+            va="center",
+            color=muted,
+            fontsize="x-small",
+        )
+
+
+MethodLayout = Literal["vertical", "horizontal"]
 
 
 def plot_method_figure(
@@ -1637,6 +1666,10 @@ def plot_method_figure(
     diffusion_speed: NDArray[np.floating],
     corners: Corners,
     factor: int = 5,
+    layout: MethodLayout = "vertical",
+    diffusion_steps: int | None = None,
+    guidance_scale: float | None = None,
+    ensemble_size: int | None = None,
     cmap: str = "viridis",
     vmax: float | None = None,
     font_size: float = 14,
@@ -1644,13 +1677,13 @@ def plot_method_figure(
     output_path: str | Path | None = "images/method_figure.png",
 ) -> Figure:
     """
-    Plot a vertical poster schematic of the downscaling method on real fields.
+    Plot a schematic of the downscaling method on real fields.
 
-    Top to bottom (inference, solid arrows): high-resolution truth -> degraded
-    input, which then feeds two independent models side by side: a U-Net (left)
-    and a conditional diffusion model (right), each ending in its own output.
-    Dashed lines mark the training-only steps: each model is trained against
-    the truth (MSE loss for the U-Net, denoising loss for the diffusion model).
+    Inference (solid arrows): high-resolution truth -> degraded input, which
+    feeds two independent models: a U-Net and a conditional diffusion model,
+    each ending in its own output. Dashed lines mark the training-only steps:
+    each model is trained against the truth (MSE loss for the U-Net, denoising
+    loss for the diffusion model).
 
     Parameters
     ----------
@@ -1671,6 +1704,14 @@ def plot_method_figure(
     factor : int, default 5
         Degradation / upscaling factor, used in the labels.
 
+    layout : {"vertical", "horizontal"}, default "vertical"
+        "vertical" flows top to bottom (posters); "horizontal" flows left to
+        right with the two models stacked (slides).
+
+    diffusion_steps, guidance_scale, ensemble_size : optional
+        Sampler details shown in the diffusion box when given: number of DDIM
+        steps, classifier-free guidance weight, and number of ensemble members.
+
     vmax : float, optional
         Top of the shared colour scale. Defaults to the 99th percentile of the
         truth speed inside the zoom box.
@@ -1680,6 +1721,9 @@ def plot_method_figure(
     fig
         Matplotlib figure.
     """
+    if layout not in get_args(MethodLayout):
+        raise ValueError(f"layout must be one of {get_args(MethodLayout)}.")
+
     bounds = _parse_corners(corners)
     if not isinstance(bounds, tuple):
         raise ValueError("corners must give an explicit zoom box.")
@@ -1701,29 +1745,9 @@ def plot_method_figure(
     train_colour = "#c0392b"
     projection = ccrs.PlateCarree()
 
-    # Lay out in inches from the top-left, then convert to figure fractions.
-    width, height = 11.4, 18.9
-    map_size = 3.4
-    centre_x, left_x, right_x = 5.7, 3.2, 8.2
-    title_h = 0.75
-    maps = {
-        "truth": (centre_x, 0.2 + title_h),
-        "degraded": (centre_x, 5.1 + title_h),
-        "unet": (left_x, 14.25 + title_h),
-        "diffusion": (right_x, 14.25 + title_h),
-    }
-    model_top, model_h, model_w = 11.0, 2.6, 3.8
-    bus_left, bus_right = 0.35, 11.05
-
-    def fx(x: float) -> float:
-        return x / width
-
-    def fy(y: float) -> float:
-        return 1 - y / height
-
-    def rect(x0: float, top: float, w: float, h: float) -> tuple[float, float, float, float]:
-        return (fx(x0), fy(top + h), w / width, h / height)
-
+    diffusion_subtitle = (
+        f"one of {ensemble_size} ensemble members" if ensemble_size else "one stochastic sample"
+    )
     panels = {
         "truth": ("High-resolution truth", f"~{hr_km:.1f} km grid", truth_crop),
         "degraded": (
@@ -1736,21 +1760,47 @@ def plot_method_figure(
             "deterministic",
             _crop_to_box(hr_lon, hr_lat, unet_speed, bounds),
         ),
-        "diffusion": ("Diffusion output", "one stochastic sample", diffusion_crop),
+        "diffusion": ("Diffusion output", diffusion_subtitle, diffusion_crop),
     }
+
+    # Geometry in inches from the top-left: map (x0, top) and model (x0, top, w, h).
+    if layout == "vertical":
+        width, height, map_size = 11.4, 18.9, 3.4
+        map_origins = {
+            "truth": (4.0, 0.95),
+            "degraded": (4.0, 5.85),
+            "unet": (1.5, 15.0),
+            "diffusion": (6.5, 15.0),
+        }
+        model_rects = {"unet": (1.3, 11.0, 3.8, 2.6), "diffusion": (6.3, 11.0, 3.8, 2.6)}
+    else:
+        width, height, map_size = 16.7, 8.4, 2.9
+        map_origins = {
+            "truth": (0.7, 2.85),
+            "degraded": (4.7, 2.85),
+            "unet": (12.6, 0.85),
+            "diffusion": (12.6, 4.85),
+        }
+        model_rects = {"unet": (8.5, 1.2, 3.5, 2.2), "diffusion": (8.5, 5.0, 3.5, 2.6)}
+
+    def fx(x: float) -> float:
+        return x / width
+
+    def fy(y: float) -> float:
+        return 1 - y / height
+
+    def rect(x0: float, top: float, w: float, h: float) -> tuple[float, float, float, float]:
+        return (fx(x0), fy(top + h), w / width, h / height)
 
     with plt.rc_context({"font.size": font_size}):
         fig = plt.figure(figsize=(width, height))
 
         map_axes: dict[str, GeoAxes] = {}
         mesh = None
-        for key, (x_mid, top) in maps.items():
+        for key, (x0, top) in map_origins.items():
             lon, lat, speed = panels[key][2]
             ax = cast(
-                GeoAxes,
-                fig.add_axes(
-                    rect(x_mid - map_size / 2, top, map_size, map_size), projection=projection
-                ),
+                GeoAxes, fig.add_axes(rect(x0, top, map_size, map_size), projection=projection)
             )
             ax.set_extent(bounds, crs=projection)
             ax.set_facecolor(land_colour)
@@ -1770,10 +1820,10 @@ def plot_method_figure(
             ax.spines["geo"].set_edgecolor(muted)
             map_axes[key] = ax
 
-        unet_ax = fig.add_axes(rect(left_x - model_w / 2, model_top, model_w, model_h))
+        unet_ax = fig.add_axes(rect(*model_rects["unet"]))
         _draw_unet(unet_ax, factor, fill=net_fill, edge=net_edge, ink=ink, title=False)
 
-        diffusion_ax = fig.add_axes(rect(right_x - model_w / 2, model_top, model_w, model_h))
+        diffusion_ax = fig.add_axes(rect(*model_rects["diffusion"]))
         _draw_diffusion(
             diffusion_ax,
             diffusion_crop[2],
@@ -1784,6 +1834,9 @@ def plot_method_figure(
             ink=ink,
             muted=muted,
             land_colour=land_colour,
+            steps=diffusion_steps,
+            guidance_scale=guidance_scale,
+            ensemble_size=ensemble_size,
         )
 
         # Map aspect is fixed by the zoom box, so read back where each panel landed.
@@ -1816,11 +1869,18 @@ def plot_method_figure(
             titled(box.x0 + box.width / 2, box.y1, panels[key][0], panels[key][1])
         titled(unet_pos.x0 + unet_pos.width / 2, unet_pos.y1, "U-Net", "encoder–decoder")
         titled(
-            diff_pos.x0 + diff_pos.width / 2, diff_pos.y1, "Diffusion model", "iterative denoising"
+            diff_pos.x0 + diff_pos.width / 2,
+            diff_pos.y1,
+            "Diffusion model",
+            "iterative denoising with a U-Net",
         )
 
-        diff_box = boxes["diffusion"]
-        cax = fig.add_axes((diff_box.x1 + fx(0.15), diff_box.y0, fx(0.15), diff_box.height))
+        unet_box, diff_box = boxes["unet"], boxes["diffusion"]
+        bar_bottom = min(unet_box.y0, diff_box.y0)
+        bar_top = diff_box.y1 if layout == "vertical" else unet_box.y1
+        cax = fig.add_axes(
+            (max(unet_box.x1, diff_box.x1) + fx(0.15), bar_bottom, fx(0.15), bar_top - bar_bottom)
+        )
         colorbar = fig.colorbar(mesh, cax=cax, extend="max")
         colorbar.set_label("Speed (m s$^{-1}$)", color=ink)
         colorbar.outline.set_visible(False)
@@ -1846,76 +1906,121 @@ def plot_method_figure(
                 Line2D(xs, ys, transform=fig.transFigure, color=colour, lw=2.0, ls=style)
             )
 
-        gap = fy(0) - fy(0.08)
-        title_gap = fy(0) - fy(0.75)
-        truth_box, degraded_box = boxes["truth"], boxes["degraded"]
-        cx = truth_box.x0 + truth_box.width / 2
-        unet_cx = unet_pos.x0 + unet_pos.width / 2
-        diff_cx = diff_pos.x0 + diff_pos.width / 2
-
-        # --- Inference path (solid) ---
-        arrow((cx, truth_box.y0 - gap), (cx, degraded_box.y1 + title_gap))
-        fig.text(
-            cx + fx(0.2),
-            (truth_box.y0 + degraded_box.y1 + title_gap) / 2,
-            f"Degrade ×{factor}",
-            ha="left",
-            va="center",
-            color=ink,
-            fontsize="small",
-        )
-        # Degraded input feeds both models.
-        split_y = degraded_box.y0 - (fy(0) - fy(0.45))
-        line([cx, cx], [degraded_box.y0 - gap, split_y])
-        line([unet_cx, diff_cx], [split_y, split_y])
-        arrow((unet_cx, split_y), (unet_cx, unet_pos.y1 + title_gap))
-        arrow((diff_cx, split_y), (diff_cx, diff_pos.y1 + title_gap))
-        arrow((unet_cx, unet_pos.y0 - gap), (unet_cx, boxes["unet"].y1 + title_gap))
-        arrow((diff_cx, diff_pos.y0 - gap), (diff_cx, diff_box.y1 + title_gap))
-
-        # --- Training (dashed): truth is the target for both models ---
-        truth_y = truth_box.y0 + truth_box.height / 2
-        unet_y = unet_pos.y0 + unet_pos.height / 2
-        diff_y = diff_pos.y0 + diff_pos.height / 2
-        for edge_x, bus_x, model_edge, model_y, label in [
-            (truth_box.x0, fx(bus_left), unet_pos.x0, unet_y, "MSE loss (vs truth)"),
-            (
-                truth_box.x1,
-                fx(bus_right),
-                diff_pos.x1,
-                diff_y,
-                "Denoising loss (on noised truth)",
-            ),
-        ]:
-            line(
-                [edge_x - gap / 2 if edge_x < cx else edge_x + gap / 2, bus_x],
-                [truth_y, truth_y],
-                train_colour,
-                "--",
-            )
-            line([bus_x, bus_x], [truth_y, model_y], train_colour, "--")
-            arrow((bus_x, model_y), (model_edge, model_y), train_colour, "--")
-            # Label runs along the dashed line, on a white patch that breaks the dash.
+        def loss_label(x: float, y: float, text: str, rotation: float = 0) -> None:
+            # Sits on the dashed line, on a white patch that breaks the dash.
             fig.text(
-                bus_x,
-                (truth_y + model_y) / 2,
-                label,
+                x,
+                y,
+                text,
                 ha="center",
                 va="center",
-                rotation=90,
+                rotation=rotation,
                 color=ink,
                 fontweight="bold",
                 fontsize="small",
                 bbox={"boxstyle": "square,pad=0.3", "facecolor": "white", "edgecolor": "none"},
             )
 
+        truth_box, degraded_box = boxes["truth"], boxes["degraded"]
+        unet_cx = unet_pos.x0 + unet_pos.width / 2
+        diff_cx = diff_pos.x0 + diff_pos.width / 2
+        unet_cy = unet_pos.y0 + unet_pos.height / 2
+        diff_cy = diff_pos.y0 + diff_pos.height / 2
+        truth_cy = truth_box.y0 + truth_box.height / 2
+        gap_x, gap_y = fx(0.08), fy(0) - fy(0.08)
+        title_gap = fy(0) - fy(0.75)
+
+        if layout == "vertical":
+            cx = truth_box.x0 + truth_box.width / 2
+
+            # --- Inference path (solid) ---
+            arrow((cx, truth_box.y0 - gap_y), (cx, degraded_box.y1 + title_gap))
+            fig.text(
+                cx + fx(0.2),
+                (truth_box.y0 + degraded_box.y1 + title_gap) / 2,
+                f"Degrade ×{factor}",
+                ha="left",
+                va="center",
+                color=ink,
+                fontsize="small",
+            )
+            # Degraded input feeds both models.
+            split_y = degraded_box.y0 - (fy(0) - fy(0.45))
+            line([cx, cx], [degraded_box.y0 - gap_y, split_y])
+            line([unet_cx, diff_cx], [split_y, split_y])
+            arrow((unet_cx, split_y), (unet_cx, unet_pos.y1 + title_gap))
+            arrow((diff_cx, split_y), (diff_cx, diff_pos.y1 + title_gap))
+            arrow((unet_cx, unet_pos.y0 - gap_y), (unet_cx, unet_box.y1 + title_gap))
+            arrow((diff_cx, diff_pos.y0 - gap_y), (diff_cx, diff_box.y1 + title_gap))
+
+            # --- Training (dashed): truth is the target for both models ---
+            for edge_x, bus_x, model_edge, model_y, label in [
+                (truth_box.x0 - gap_x, fx(0.35), unet_pos.x0, unet_cy, "MSE loss (vs truth)"),
+                (
+                    truth_box.x1 + gap_x,
+                    fx(width - 0.35),
+                    diff_pos.x1,
+                    diff_cy,
+                    "Denoising loss (on noised truth)",
+                ),
+            ]:
+                line([edge_x, bus_x], [truth_cy, truth_cy], train_colour, "--")
+                line([bus_x, bus_x], [truth_cy, model_y], train_colour, "--")
+                arrow((bus_x, model_y), (model_edge, model_y), train_colour, "--")
+                loss_label(bus_x, (truth_cy + model_y) / 2, label, rotation=90)
+            legend_anchor, legend_loc = (fx(0.2), 0.0), "lower left"
+        else:
+            # --- Inference path (solid) ---
+            arrow((truth_box.x1 + gap_x, truth_cy), (degraded_box.x0 - gap_x, truth_cy))
+            fig.text(
+                (truth_box.x1 + degraded_box.x0) / 2,
+                truth_cy + (fy(0) - fy(0.15)),
+                f"Degrade\n×{factor}",
+                ha="center",
+                va="bottom",
+                color=ink,
+                fontsize="small",
+                linespacing=1.1,
+            )
+            # Degraded input feeds both models.
+            split_x = (degraded_box.x1 + unet_pos.x0) / 2
+            line([degraded_box.x1 + gap_x, split_x], [truth_cy, truth_cy])
+            line([split_x, split_x], [unet_cy, diff_cy])
+            arrow((split_x, unet_cy), (unet_pos.x0, unet_cy))
+            arrow((split_x, diff_cy), (diff_pos.x0, diff_cy))
+            arrow((unet_pos.x1 + gap_x, unet_cy), (unet_box.x0 - gap_x, unet_cy))
+            arrow((diff_pos.x1 + gap_x, diff_cy), (diff_box.x0 - gap_x, diff_cy))
+
+            # --- Training (dashed): truth is the target for both models ---
+            # Routed round the outside: over the top to the U-Net, under the bottom to
+            # the diffusion model, entering each on its right so it misses the titles.
+            bus_x = fx(0.35)
+            top_y, bottom_y = fy(0.3), fy(height - 0.3)
+            enter_x = unet_pos.x0 + 0.92 * unet_pos.width
+            line([truth_box.x0 - gap_x, bus_x], [truth_cy, truth_cy], train_colour, "--")
+            line([bus_x, bus_x], [bottom_y, top_y], train_colour, "--")
+            line([bus_x, enter_x], [top_y, top_y], train_colour, "--")
+            # 0.88 is the top of the PixelShuffle bar in _draw_unet's axes.
+            arrow(
+                (enter_x, top_y),
+                (enter_x, unet_pos.y0 + 0.88 * unet_pos.height),
+                train_colour,
+                "--",
+            )
+            line([bus_x, enter_x], [bottom_y, bottom_y], train_colour, "--")
+            arrow((enter_x, bottom_y), (enter_x, diff_pos.y0), train_colour, "--")
+            label_x = (degraded_box.x0 + degraded_box.x1) / 2
+            loss_label(label_x, top_y, "MSE loss (vs truth)")
+            loss_label(label_x, bottom_y, "Denoising loss (on noised truth)")
+            legend_anchor, legend_loc = (diff_box.x0, 0.0), "lower left"
+
         fig.legend(
             handles=[
                 Line2D([], [], color=ink, lw=2, label="Inference"),
                 Line2D([], [], color=train_colour, lw=2, ls="--", label="Training only"),
             ],
-            loc="lower left",
-            bbox_to_anchor=(fx(0.2), 0.0),
+            loc=legend_loc,
+            bbox_to_anchor=legend_anchor,
             ncol=2,
             frameon=False,
             fontsize="small",

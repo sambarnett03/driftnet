@@ -62,3 +62,48 @@ def test_plot_method_figure_saves_png_and_pdf(mock_savefig, grids, tmp_path):
 
     saved = [call.args[0] for call in mock_savefig.call_args_list]
     assert saved == [output, output.with_suffix(".pdf")]
+
+
+@pytest.mark.parametrize("layout", ["vertical", "horizontal"])
+@patch("matplotlib.figure.Figure.savefig")
+def test_plot_method_figure_layouts_with_sampler_details(mock_savefig, grids, layout):
+    lon, lat, lr_lon, lr_lat = grids
+    speed, lr_speed = np.ones_like(lon), np.ones_like(lr_lon)
+    fig = plot_method_figure(
+        lon,
+        lat,
+        lr_lon,
+        lr_lat,
+        speed,
+        lr_speed,
+        speed,
+        speed,
+        corners=(40.3, 41.5, -10.7, -9.5),
+        layout=layout,
+        diffusion_steps=20,
+        guidance_scale=2.0,
+        ensemble_size=10,
+        output_path=None,
+    )
+    texts = [t.get_text() for ax in fig.axes for t in ax.texts] + [t.get_text() for t in fig.texts]
+    assert "DDIM ×20" in texts
+    assert "Samples ×10" in texts
+    assert "classifier-free guidance, w = 2" in texts
+    assert "one of 10 ensemble members" in texts
+
+
+def test_plot_method_figure_rejects_unknown_layout(grids):
+    lon, lat, lr_lon, lr_lat = grids
+    with pytest.raises(ValueError):
+        plot_method_figure(
+            lon,
+            lat,
+            lr_lon,
+            lr_lat,
+            lon,
+            lr_lon,
+            lon,
+            lon,
+            corners=(40.3, 41.5, -10.7, -9.5),
+            layout="diagonal",  # type: ignore[arg-type]
+        )

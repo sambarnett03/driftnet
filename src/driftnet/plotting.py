@@ -2305,3 +2305,331 @@ def plot_velocity_comparison(
         vmax=vmax,
         output_path=output_path,
     )
+
+
+def load_speed_series(
+    data_config: DataConfig,
+    exp_config: ExperimentConfig,
+    experiments: dict[str, str],
+    start_idx: int = 0,
+    n_frames: int = 48,
+    stride: int = 1,
+    corners: Corners | None = None,
+    box_size: float = 3.0,
+) -> tuple[NDArray[np.floating], NDArray[np.floating], NDArray[np.datetime64], dict[str, NDArray]]:
+    """
+    Load a time series of speed fields in a zoom box, for truth and each experiment.
+
+    Times come from the first experiment's predictions (``start_idx`` onwards, every
+    ``stride`` steps); the truth and other experiments are matched to them. Only the
+    box is read from disk. Land (zero truth velocity) is NaN in every field.
+
+    Parameters
+    ----------
+    experiments : dict
+        Label -> experiment name, e.g. ``{"Diffusion": "diffusioncfg/ensemble_member_0"}``.
+        Predictions are read from ``<exp_config.base>/<name>/predictions.zarr``.
+
+    corners : tuple or list, optional
+        Box to load. Defaults to the ``box_size`` degree box with the fastest mean
+        currents at the first time.
+
+    Returns
+    -------
+    lon, lat : 2D arrays
+        Coordinates of the box.
+    times : 1D array
+        Frame times.
+    speeds : dict
+        "Ground truth" followed by each experiment label -> (time, y, x) speed array.
+    """
+    factor = data_config.degrade_factor
+    predictions_name = Path(exp_config.model_predictions).name
+
+    stores = {}
+    for label, name in experiments.items():
+        path = Path(exp_config.base) / name / predictions_name
+        if not path.exists():
+            raise FileNotFoundError(f"Could not find predicted dataset at {path}")
+        stores[label] = xr.open_zarr(path)
+
+    first = next(iter(stores.values()))
+    times = first.time_counter.values[start_idx : start_idx + n_frames * stride : stride]
+    if len(times) == 0:
+        raise ValueError(f"No predictions from index {start_idx}.")
+
+    truth = xr.open_zarr(data_config.original_res)
+    y_slice, x_slice = get_spatial_trim_slices(truth.sizes["x"], truth.sizes["y"], factor)
+    truth = truth.isel(y=y_slice, x=x_slice)
+
+    grid = np.load(data_config.grid_params)
+    lon = grid["rho_lon"][y_slice, x_slice]
+    lat = grid["rho_lat"][y_slice, x_slice]
+
+    if corners is None:
+        degraded = xr.open_zarr(data_config.degraded_res).sel(time_counter=times[0])
+        lr_speed = np.hypot(
+            degraded.velocity.isel(component=0).values, degraded.velocity.isel(component=1).values
+        )
+        lr_speed[lr_speed == 0] = np.nan
+        corners = most_energetic_box(
+            _block_average_2d(lon, factor, factor),
+            _block_average_2d(lat, factor, factor),
+            lr_speed,
+            box_size,
+        )
+        print(f"Auto-selected box (lon_min, lon_max, lat_min, lat_max): {corners}")
+
+    bounds = _parse_corners(corners)
+    if not isinstance(bounds, tuple):
+        raise ValueError("corners must give an explicit box.")
+    rows, cols = _box_slices(lon, lat, bounds)
+
+    def load(ds: xr.Dataset) -> tuple[NDArray, NDArray]:
+        vel = ds.velocity.sel(time_counter=times).isel(y=rows, x=cols).values.astype(float)
+        return vel[:, 0], vel[:, 1]
+
+    truth_u, truth_v = load(truth)
+    land = (truth_u == 0) & (truth_v == 0)
+
+    speeds = {"Ground truth": np.hypot(truth_u, truth_v)}
+    for label, ds in stores.items():
+        speeds[label] = np.hypot(*load(ds))
+    for speed in speeds.values():
+        speed[land] = np.nan
+
+    return lon[rows, cols], lat[rows, cols], times, speeds
+
+
+def frame_to_frame_change(speed: NDArray[np.floating]) -> NDArray[np.floating]:
+    """Return the RMS change in speed between consecutive frames of a (time, y, x) array."""
+    return np.sqrt(np.nanmean(np.diff(speed, axis=0) ** 2, axis=(1, 2)))
+
+
+def _hours_since(times: NDArray[np.datetime64]) -> NDArray[np.floating]:
+    return (times - times[0]) / np.timedelta64(1, "h")
+
+
+def plot_frame_strip(
+    lon: NDArray[np.floating],
+    lat: NDArray[np.floating],
+    times: NDArray[np.datetime64],
+    speeds: dict[str, NDArray[np.floating]],
+    n_columns: int = 6,
+    cmap: str = "viridis",
+    vmax: float | None = None,
+    font_size: float = 12,
+    dpi: int = 300,
+    output_path: str | Path | None = "images/animation/frame_strip.png",
+) -> Figure:
+    """
+    Plot consecutive frames as a grid: one row per field, one column per time.
+
+    Uses the first ``n_columns`` frames, so the columns are consecutive time steps.
+    """
+    n_columns = min(n_columns, len(times))
+    if vmax is None:
+        vmax = float(np.nanpercentile(speeds["Ground truth"], 99))
+
+    ink, muted, land_colour = "#262626", "#595959", "#d9d9d9"
+    projection = ccrs.PlateCarree()
+    hours = _hours_since(times)
+    extent = (float(lon.min()), float(lon.max()), float(lat.min()), float(lat.max()))
+
+    with plt.rc_context({"font.size": font_size}):
+        fig, axes = plt.subplots(
+            len(speeds),
+            n_columns,
+            figsize=(2.3 * n_columns + 1.2, 2.4 * len(speeds) + 0.4),
+            subplot_kw={"projection": projection},
+            gridspec_kw={"wspace": 0.04, "hspace": 0.08},
+            squeeze=False,
+        )
+
+        mesh = None
+        for row, (label, speed) in enumerate(speeds.items()):
+            for col in range(n_columns):
+                ax = cast(GeoAxes, axes[row, col])
+                ax.set_extent(extent, crs=projection)
+                ax.set_facecolor(land_colour)
+                mesh = ax.pcolormesh(
+                    lon,
+                    lat,
+                    np.ma.masked_invalid(speed[col]),
+                    transform=projection,
+                    cmap=cmap,
+                    vmin=0,
+                    vmax=vmax,
+                    shading="nearest",
+                    rasterized=True,
+                )
+                ax.coastlines(resolution="10m", linewidth=0.5, color="#404040")
+                ax.spines["geo"].set_edgecolor(muted)
+                if row == 0:
+                    ax.set_title(f"t + {hours[col]:g} h", color=ink, fontsize="medium")
+                if col == 0:
+                    ax.text(
+                        -0.06,
+                        0.5,
+                        label,
+                        transform=ax.transAxes,
+                        rotation=90,
+                        ha="right",
+                        va="center",
+                        color=ink,
+                        fontweight="bold",
+                    )
+
+        fig.canvas.draw()
+        top = axes[0, -1].get_position()
+        bottom = axes[-1, -1].get_position()
+        cax = fig.add_axes((top.x1 + 0.01, bottom.y0, 0.012, top.y1 - bottom.y0))
+        colorbar = fig.colorbar(mesh, cax=cax, extend="max")
+        colorbar.set_label("Speed (m s$^{-1}$)", color=ink)
+        colorbar.outline.set_visible(False)
+
+        if output_path is not None:
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+
+    return fig
+
+
+def plot_flicker(
+    times: NDArray[np.datetime64],
+    speeds: dict[str, NDArray[np.floating]],
+    font_size: float = 12,
+    dpi: int = 300,
+    output_path: str | Path | None = "images/animation/flicker.png",
+) -> Figure:
+    """
+    Plot the RMS frame-to-frame change in speed for each field over time.
+
+    A field with no memory between frames (e.g. diffusion samples drawn independently
+    per time step) changes far more between frames than the truth does.
+    """
+    hours = _hours_since(times)[1:]
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+
+    with plt.rc_context({"font.size": font_size}):
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+        color_idx = 0
+        for label, speed in speeds.items():
+            change = frame_to_frame_change(speed)
+            if label == "Ground truth":
+                style = {"color": "black", "linestyle": "--", "linewidth": 2.5, "zorder": 10}
+            else:
+                style = {"color": colors[color_idx % len(colors)], "linewidth": 2}
+                color_idx += 1
+            ax.plot(hours, change, label=f"{label} (mean {np.nanmean(change):.3f})", **style)
+
+        step = (times[1] - times[0]) / np.timedelta64(1, "m") if len(times) > 1 else 0
+        ax.set_title("Frame-to-frame change in speed", fontweight="bold")
+        ax.set_xlabel("Time (hours)")
+        ax.set_ylabel(f"RMS change per {step:g} min step (m s$^{{-1}}$)")
+        ax.set_ylim(bottom=0)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.grid(True, linestyle="--", alpha=0.5, color="gray")
+        ax.legend(frameon=False, fontsize="small")
+
+        if output_path is not None:
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+
+    return fig
+
+
+def animate_speed_series(
+    lon: NDArray[np.floating],
+    lat: NDArray[np.floating],
+    times: NDArray[np.datetime64],
+    speeds: dict[str, NDArray[np.floating]],
+    cmap: str = "viridis",
+    vmax: float | None = None,
+    fps: int = 6,
+    font_size: float = 12,
+    dpi: int = 150,
+    output_path: str | Path = "images/animation/speed_animation.mp4",
+) -> Path:
+    """
+    Animate the speed fields side by side, one frame per time step.
+
+    Writes an MP4 if ffmpeg is available (best for PowerPoint), otherwise falls back
+    to a GIF next to the requested path. Returns the path written.
+    """
+    from matplotlib import animation
+
+    if vmax is None:
+        vmax = float(np.nanpercentile(speeds["Ground truth"], 99))
+
+    ink, muted, land_colour = "#262626", "#595959", "#d9d9d9"
+    projection = ccrs.PlateCarree()
+    hours = _hours_since(times)
+    extent = (float(lon.min()), float(lon.max()), float(lat.min()), float(lat.max()))
+
+    output_path = Path(output_path)
+    if output_path.suffix == ".mp4" and not animation.writers.is_available("ffmpeg"):
+        print("ffmpeg not available; writing a GIF instead.")
+        output_path = output_path.with_suffix(".gif")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with plt.rc_context({"font.size": font_size}):
+        n = len(speeds)
+        fig, axes = plt.subplots(
+            1,
+            n,
+            figsize=(4.2 * n + 1, 4.9),
+            subplot_kw={"projection": projection},
+            gridspec_kw={"wspace": 0.05},
+            squeeze=False,
+        )
+        # Video frames can't use bbox_inches="tight", so trim the margins by hand.
+        fig.subplots_adjust(left=0.01, right=0.9, top=0.9, bottom=0.1)
+        meshes = []
+        for ax_raw, (label, speed) in zip(axes[0], speeds.items(), strict=True):
+            ax = cast(GeoAxes, ax_raw)
+            ax.set_extent(extent, crs=projection)
+            ax.set_facecolor(land_colour)
+            meshes.append(
+                ax.pcolormesh(
+                    lon,
+                    lat,
+                    np.ma.masked_invalid(speed[0]),
+                    transform=projection,
+                    cmap=cmap,
+                    vmin=0,
+                    vmax=vmax,
+                    shading="nearest",
+                )
+            )
+            ax.coastlines(resolution="10m", linewidth=0.6, color="#404040")
+            ax.spines["geo"].set_edgecolor(muted)
+            ax.set_title(label, fontweight="bold", color=ink)
+
+        fig.canvas.draw()
+        last = axes[0, -1].get_position()
+        cax = fig.add_axes((last.x1 + 0.01, last.y0, 0.012, last.height))
+        colorbar = fig.colorbar(meshes[0], cax=cax, extend="max")
+        colorbar.set_label("Speed (m s$^{-1}$)", color=ink)
+        colorbar.outline.set_visible(False)
+        clock = fig.text(0.46, 0.03, "", ha="center", color=muted)
+
+        def update(i: int):
+            for mesh, speed in zip(meshes, speeds.values(), strict=True):
+                mesh.set_array(np.ma.masked_invalid(speed[i]))
+            clock.set_text(f"{str(times[i])[:16].replace('T', ' ')}   (t + {hours[i]:g} h)")
+            return [*meshes, clock]
+
+        anim = animation.FuncAnimation(fig, update, frames=len(times), blit=False)
+        writer = (
+            animation.FFMpegWriter(fps=fps, bitrate=4000)
+            if output_path.suffix == ".mp4"
+            else animation.PillowWriter(fps=fps)
+        )
+        anim.save(output_path, writer=writer, dpi=dpi)
+        plt.close(fig)
+
+    return output_path
